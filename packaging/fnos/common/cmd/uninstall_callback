@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+run_dir="${TRIM_PKGVAR:?}/run"
+rm -f \
+  "$run_dir/helper.sock" \
+  "$run_dir/server.pid" \
+  "$run_dir/helper.pid" \
+  "$run_dir/uninstall-helper.pid" \
+  "${TRIM_APPDEST:?}/app.sock"
+echo "DockFN 运行时文件已清理；目标服务、容器、卷和业务数据均未操作。" >>"${TRIM_TEMP_LOGFILE:?}"

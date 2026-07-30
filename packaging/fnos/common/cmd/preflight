@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+phase="${1:?lifecycle phase required}"
+log="${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+
+fail() {
+  echo "DockFN ${phase} 前置检查失败：$1" >>"$log"
+  exit 1
+}
+
+case "$phase" in
+  install|upgrade|config) ;;
+  *) fail "未知生命周期阶段" ;;
+esac
+
+case "${TRIM_SYS_ARCH:-}" in
+  ""|x86|x86_64|amd64|arm|aarch64|arm64) ;;
+  *) fail "不支持的系统架构 ${TRIM_SYS_ARCH}" ;;
+esac
+
+[ -x /usr/sbin/start-stop-daemon ] || fail "缺少 /usr/sbin/start-stop-daemon"
+[ -x /usr/bin/setpriv ] || fail "缺少 /usr/bin/setpriv"
+[ -x /usr/local/bin/appcenter-cli ] || fail "缺少 /usr/local/bin/appcenter-cli"
+[ -x /usr/local/bin/fnpack ] || fail "缺少 /usr/local/bin/fnpack"
+
+echo "DockFN ${phase} 前置检查通过。" >>"$log"

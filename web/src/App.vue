@@ -1,0 +1,1550 @@
+<script setup lang="ts">
+import { Icon } from '@iconify/vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import dockfnLogo from './assets/dockfn-logo.png'
+import {
+  APIError,
+  request,
+  type AppInput,
+  type AppOrigin,
+  type AppView,
+  type Diagnostics,
+  type DiscoveryCandidate,
+  type OperationResult,
+} from './api/client'
+
+type CreatorStep = 'discover' | 'review' | 'complete'
+type DiagnosticItem = Diagnostics['logs'][number]
+type DiscoverySourceFilter = 'all' | 'docker' | 'docker-host' | 'host'
+type IconDiscoveryStatus = '' | 'loading' | 'found' | 'missing'
+
+const commonCandidateIconURIs = [
+  '/favicon.ico',
+  '/favicon.png',
+  '/apple-touch-icon.png',
+  '/apple-touch-icon-precomposed.png',
+  '/icon.png',
+  '/public/favicon.png',
+]
+
+const apps = ref<AppView[]>([])
+const candidates = ref<DiscoveryCandidate[]>([])
+const diagnostics = ref<Diagnostics | null>(null)
+const loading = ref(true)
+const scanning = ref(false)
+const scanCompleted = ref(false)
+const busy = ref('')
+const notice = ref('')
+const error = ref('')
+const search = ref('')
+const creatorOpen = ref(false)
+const diagnosticsOpen = ref(false)
+const selectedDiagnostic = ref<DiagnosticItem | null>(null)
+const diagnosticNotice = ref('')
+const pendingDiagnosticsClear = ref(false)
+const creatorStep = ref<CreatorStep>('discover')
+const discoverySourceFilter = ref<DiscoverySourceFilter>('all')
+const hideInstalledCandidates = ref(true)
+const editing = ref<AppView | null>(null)
+const completedApp = ref<AppView | null>(null)
+const selectedCandidate = ref<DiscoveryCandidate | null>(null)
+const pendingRemoval = ref<AppView | null>(null)
+const iconPreview = ref('')
+const iconChanged = ref(false)
+const iconManuallyEdited = ref(false)
+const iconDiscoveryStatus = ref<IconDiscoveryStatus>('')
+let iconPreviewSequence = 0
+let discoverySequence = 0
+let pathIconTimer: ReturnType<typeof setTimeout> | undefined
+
+const form = reactive<AppInput>({
+  displayName: '',
+  description: '',
+  entryPrefix: '',
+  openType: 'url',
+  protocol: 'http',
+  port: 8080,
+  path: '/',
+  allUsers: false,
+  origin: { source: 'manual' },
+})
+
+const filteredApps = computed(() => {
+  const query = search.value.trim().toLocaleLowerCase('zh-CN')
+  if (!query) return apps.value
+  return apps.value.filter((item) =>
+    [
+      item.displayName,
+      item.appName,
+      `${item.protocol}:${item.port}${item.path}`,
+      item.origin?.sourceDetail || '',
+      item.origin?.description || '',
+      item.origin?.networkMode || '',
+      item.origin?.pid ? `PID ${item.origin.pid}` : '',
+    ].some((value) => value.toLocaleLowerCase('zh-CN').includes(query)),
+  )
+})
+
+const discoverySourceOptions = computed(() => {
+  const options: Array<{ key: DiscoverySourceFilter; label: string }> = [
+    { key: 'all', label: '全部' },
+    { key: 'docker', label: 'Docker' },
+    { key: 'docker-host', label: 'Docker Host' },
+    { key: 'host', label: '宿主机' },
+  ]
+  return options
+    .map((option) => ({
+      ...option,
+      count:
+        option.key === 'all'
+          ? candidates.value.length
+          : candidates.value.filter((candidate) => candidateSourceGroup(candidate) === option.key)
+              .length,
+    }))
+    .filter((option) => option.key === 'all' || option.count > 0)
+})
+
+const installedCandidateCount = computed(
+  () =>
+    candidates.value.filter((candidate) => candidate.registrationSuggestion !== 'available').length,
+)
+
+const visibleCandidates = computed(() =>
+  candidates.value.filter((candidate) => {
+    if (
+      discoverySourceFilter.value !== 'all' &&
+      candidateSourceGroup(candidate) !== discoverySourceFilter.value
+    ) {
+      return false
+    }
+    return !(hideInstalledCandidates.value && candidate.registrationSuggestion !== 'available')
+  }),
+)
+
+const groupedCandidates = computed(() => {
+  const sourceOrder: Exclude<DiscoverySourceFilter, 'all'>[] = ['docker', 'docker-host', 'host']
+  const sourceLabels: Record<Exclude<DiscoverySourceFilter, 'all'>, string> = {
+    docker: 'Docker',
+    'docker-host': 'Docker Host',
+    host: '宿主机',
+  }
+  return sourceOrder.flatMap((source) => {
+    const sourceItems = visibleCandidates.value.filter(
+      (candidate) => candidateSourceGroup(candidate) === source,
+    )
+    if (!sourceItems.length) return []
+    const groups = new Map<string, DiscoveryCandidate[]>()
+    for (const candidate of sourceItems) {
+      const key =
+        candidate.groupKey || `${candidate.source}:${candidate.sourceDetail || candidate.port}`
+      const group = groups.get(key) || []
+      group.push(candidate)
+      groups.set(key, group)
+    }
+    return [
+      {
+        key: source,
+        label: sourceLabels[source],
+        portCount: sourceItems.length,
+        groups: Array.from(groups, ([key, items]) => ({
+          key,
+          tags: sourceTags(items[0]),
+          items: [...items].sort(
+            (left, right) =>
+              Number(right.preferred) - Number(left.preferred) || left.port - right.port,
+          ),
+        })),
+      },
+    ]
+  })
+})
+
+const diagnosticItems = computed(() =>
+  diagnostics.value ? [...diagnostics.value.logs, ...(diagnostics.value.reports || [])] : [],
+)
+
+const entryPrefixValid = computed(() => {
+  const prefix = normalizedEntryPrefix(form.entryPrefix)
+  return !prefix || /^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?$/.test(prefix)
+})
+
+const entryNamePreview = computed(() => {
+  const prefix = normalizedEntryPrefix(form.entryPrefix)
+  if (!prefix) return '<自动 ID>.dkfn'
+  return entryPrefixValid.value ? `${prefix}.dkfn` : '<无效 ID>'
+})
+
+function normalizedEntryPrefix(value?: string) {
+  return value?.trim() || ''
+}
+
+function entryPrefix(appName: string) {
+  if (appName.endsWith('.dkfn')) return appName.slice(0, -'.dkfn'.length)
+  return ''
+}
+
+async function loadApps() {
+  loading.value = true
+  error.value = ''
+  try {
+    const response = await request<{ items: AppView[] }>('/apps')
+    apps.value = response.items
+  } catch (reason) {
+    showError(reason)
+  } finally {
+    loading.value = false
+  }
+}
+
+function resetForm() {
+  clearPathIconTimer()
+  iconPreviewSequence += 1
+  Object.assign(form, {
+    displayName: '',
+    description: '',
+    entryPrefix: '',
+    openType: 'url',
+    protocol: 'http',
+    port: 8080,
+    path: '/',
+    allUsers: false,
+    origin: { source: 'manual' },
+    iconBase64: undefined,
+    iconUri: undefined,
+  })
+  iconPreview.value = ''
+  iconChanged.value = false
+  iconManuallyEdited.value = false
+  iconDiscoveryStatus.value = ''
+}
+
+function beginCreate() {
+  editing.value = null
+  completedApp.value = null
+  selectedCandidate.value = null
+  candidates.value = []
+  discoverySourceFilter.value = 'all'
+  hideInstalledCandidates.value = true
+  scanCompleted.value = false
+  creatorStep.value = 'discover'
+  resetForm()
+  error.value = ''
+  creatorOpen.value = true
+  void scanServices()
+}
+
+function beginManualCreate() {
+  selectedCandidate.value = null
+  resetForm()
+  creatorStep.value = 'review'
+}
+
+function beginEdit(item: AppView) {
+  editing.value = item
+  completedApp.value = null
+  selectedCandidate.value = null
+  creatorStep.value = 'review'
+  clearPathIconTimer()
+  iconManuallyEdited.value = false
+  iconDiscoveryStatus.value = ''
+  Object.assign(form, {
+    displayName: item.displayName,
+    description: item.description || '',
+    entryPrefix: entryPrefix(item.appName),
+    openType: item.openType || 'url',
+    protocol: item.protocol,
+    port: item.port,
+    path: item.path,
+    allUsers: item.allUsers,
+    origin: item.origin,
+    iconBase64: undefined,
+    iconUri: undefined,
+  })
+  iconPreview.value = item.iconDataUrl || ''
+  iconChanged.value = false
+  error.value = ''
+  creatorOpen.value = true
+}
+
+async function scanServices() {
+  const sequence = ++discoverySequence
+  scanning.value = true
+  error.value = ''
+  try {
+    const response = await request<{ items: DiscoveryCandidate[] }>('/discovery/scan', {
+      method: 'POST',
+    })
+    if (sequence !== discoverySequence) return
+    candidates.value = response.items
+    if (response.items.length === 0) notice.value = '未发现可访问的本地 Web 服务；你仍可手动填写。'
+  } catch (reason) {
+    if (sequence === discoverySequence) showError(reason)
+  } finally {
+    if (sequence === discoverySequence) {
+      scanning.value = false
+      scanCompleted.value = true
+    }
+  }
+}
+
+function selectCandidate(candidate: DiscoveryCandidate) {
+  if (candidate.registrationSuggestion !== 'available') {
+    error.value = `${suggestionLabel(candidate)}，为避免重复安装，不能再次创建 DockFN 入口。`
+    return
+  }
+  selectedCandidate.value = candidate
+  Object.assign(form, {
+    displayName: candidate.displayName,
+    description: '',
+    entryPrefix: '',
+    openType: 'url',
+    protocol: candidate.protocol,
+    port: candidate.port,
+    path: candidate.path,
+    allUsers: false,
+    origin: {
+      source: candidate.source,
+      sourceDetail: candidate.sourceDetail,
+      description: candidate.description,
+      networkMode: candidate.networkMode,
+      pid: candidate.pid,
+      watchCow: candidate.watchCow,
+    },
+    iconBase64: undefined,
+    iconUri: undefined,
+  })
+  iconPreview.value = ''
+  iconChanged.value = false
+  iconManuallyEdited.value = false
+  iconDiscoveryStatus.value = ''
+  creatorStep.value = 'review'
+  void discoverCandidateIcon(candidate)
+}
+
+async function discoverCandidateIcon(candidate: DiscoveryCandidate) {
+  if (iconManuallyEdited.value) return
+  const sequence = ++iconPreviewSequence
+  const iconURIs = [candidate.iconUri?.trim(), ...commonCandidateIconURIs].filter(
+    (value, index, values): value is string => !!value && values.indexOf(value) === index,
+  )
+  for (const iconUri of iconURIs) {
+    try {
+      const response = await request<{ dataUrl: string }>('/icons/preview', {
+        method: 'POST',
+        body: JSON.stringify({
+          iconUri,
+          protocol: candidate.protocol,
+          port: candidate.port,
+        }),
+      })
+      if (
+        sequence !== iconPreviewSequence ||
+        selectedCandidate.value?.key !== candidate.key ||
+        iconManuallyEdited.value
+      ) {
+        return
+      }
+      form.iconUri = iconUri
+      iconPreview.value = response.dataUrl
+      return
+    } catch {
+      // Candidate icon discovery is advisory and continues through the small
+      // local favicon allowlist before falling back to the DockFN icon.
+    }
+  }
+}
+
+function clearPathIconTimer() {
+  if (pathIconTimer !== undefined) {
+    clearTimeout(pathIconTimer)
+    pathIconTimer = undefined
+  }
+}
+
+function schedulePathIconDiscovery() {
+  clearPathIconTimer()
+  iconPreviewSequence += 1
+  iconDiscoveryStatus.value = ''
+  if (iconManuallyEdited.value || creatorStep.value !== 'review') return
+  pathIconTimer = setTimeout(() => {
+    pathIconTimer = undefined
+    void discoverPathIcon()
+  }, 400)
+}
+
+async function discoverPathIcon() {
+  if (iconManuallyEdited.value || creatorStep.value !== 'review' || !creatorOpen.value) return
+  const protocol = form.protocol
+  const port = Number(form.port)
+  const path = form.path.trim()
+  if (
+    (protocol !== 'http' && protocol !== 'https') ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535 ||
+    !path.startsWith('/')
+  ) {
+    return
+  }
+  const sequence = ++iconPreviewSequence
+  const fingerprint = `${protocol}:${port}:${path}`
+  iconDiscoveryStatus.value = 'loading'
+  try {
+    const response = await request<{ iconUri: string; dataUrl: string }>('/icons/discover', {
+      method: 'POST',
+      body: JSON.stringify({ protocol, port, path }),
+    })
+    if (
+      sequence !== iconPreviewSequence ||
+      iconManuallyEdited.value ||
+      fingerprint !== `${form.protocol}:${form.port}:${form.path.trim()}`
+    ) {
+      return
+    }
+    form.iconUri = response.iconUri
+    iconPreview.value = response.dataUrl
+    iconChanged.value = false
+    iconDiscoveryStatus.value = 'found'
+  } catch {
+    if (sequence === iconPreviewSequence && !iconManuallyEdited.value) {
+      iconDiscoveryStatus.value = 'missing'
+    }
+  }
+}
+
+function rediscoverPathIcon() {
+  clearPathIconTimer()
+  iconManuallyEdited.value = false
+  void discoverPathIcon()
+}
+
+function backToDiscovery() {
+  if (editing.value) return
+  creatorStep.value = 'discover'
+}
+
+async function selectIcon(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const supportedType = [
+    'image/png',
+    'image/jpeg',
+    'image/x-icon',
+    'image/vnd.microsoft.icon',
+  ].includes(file.type)
+  if (
+    (!supportedType && !file.name.toLocaleLowerCase('en-US').endsWith('.ico')) ||
+    file.size > 512 * 1024
+  ) {
+    error.value = '图标必须是 512 KiB 以内的 PNG、JPEG 或 ICO。'
+    input.value = ''
+    return
+  }
+  clearPathIconTimer()
+  iconManuallyEdited.value = true
+  iconDiscoveryStatus.value = ''
+  iconPreviewSequence += 1
+  iconPreview.value = await readDataURL(file)
+  form.iconUri = undefined
+  iconChanged.value = true
+}
+
+function removeIcon() {
+  clearPathIconTimer()
+  iconManuallyEdited.value = true
+  iconDiscoveryStatus.value = ''
+  iconPreviewSequence += 1
+  iconPreview.value = ''
+  form.iconUri = undefined
+  iconChanged.value = true
+}
+
+async function refreshIconURI() {
+  clearPathIconTimer()
+  iconManuallyEdited.value = true
+  iconDiscoveryStatus.value = ''
+  const value = form.iconUri?.trim()
+  form.iconUri = value || undefined
+  iconChanged.value = false
+  await previewIconURI(value)
+}
+
+function onIconURIInput() {
+  clearPathIconTimer()
+  iconManuallyEdited.value = true
+  iconDiscoveryStatus.value = ''
+  iconPreviewSequence += 1
+  iconPreview.value = ''
+  iconChanged.value = false
+}
+
+async function previewIconURI(value?: string) {
+  const uri = value?.trim()
+  const sequence = ++iconPreviewSequence
+  iconPreview.value = ''
+  if (!uri) return
+  try {
+    const response = await request<{ dataUrl: string }>('/icons/preview', {
+      method: 'POST',
+      body: JSON.stringify({ iconUri: uri, protocol: form.protocol, port: form.port }),
+    })
+    if (sequence === iconPreviewSequence && form.iconUri?.trim() === uri) {
+      iconPreview.value = response.dataUrl
+    }
+  } catch {
+    // Preview is advisory. Creation performs the authoritative icon validation
+    // and reports a field error without discarding the URI the user entered.
+  }
+}
+
+async function submit() {
+  const creating = !editing.value
+  busy.value = 'submit'
+  error.value = ''
+  try {
+    const payload: AppInput = { ...form }
+    if (iconChanged.value) {
+      payload.iconBase64 = iconPreview.value
+      payload.iconUri = undefined
+    }
+    const path = editing.value ? `/apps/${editing.value.id}` : '/apps'
+    const method = editing.value ? 'PUT' : 'POST'
+    if (creating) {
+      completedApp.value = null
+      creatorStep.value = 'complete'
+    }
+    const response = await request<OperationResult>(path, {
+      method,
+      body: JSON.stringify(payload),
+    })
+    replaceApp(response.app)
+    if (editing.value) {
+      notice.value = '应用入口已更新。'
+      creatorOpen.value = false
+    } else {
+      completedApp.value = response.app
+      creatorStep.value = 'complete'
+    }
+  } catch (reason) {
+    if (creating) creatorStep.value = 'review'
+    showError(reason)
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function runAction(item: AppView, action: 'check' | 'repair' | 'rollback') {
+  busy.value = `${item.id}:${action}`
+  error.value = ''
+  try {
+    if (action === 'check') {
+      replaceApp(await request<AppView>(`/apps/${item.id}/check`, { method: 'POST' }))
+      notice.value = '登记壳和目标端口检测已完成。'
+    } else {
+      const response = await request<OperationResult>(`/apps/${item.id}/${action}`, {
+        method: 'POST',
+      })
+      replaceApp(response.app)
+      notice.value = action === 'repair' ? '登记壳已重新安装。' : '已回退到上一次成功配置。'
+    }
+  } catch (reason) {
+    showError(reason)
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function removeConfirmed() {
+  const item = pendingRemoval.value
+  if (!item) return
+  busy.value = `${item.id}:remove`
+  error.value = ''
+  try {
+    await request<void>(`/apps/${item.id}`, { method: 'DELETE' })
+    apps.value = apps.value.filter((candidate) => candidate.id !== item.id)
+    pendingRemoval.value = null
+    notice.value = 'fnOS 应用入口已移除；目标服务和数据未受影响。'
+  } catch (reason) {
+    showError(reason)
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function openDiagnostics() {
+  diagnosticsOpen.value = true
+  selectedDiagnostic.value = null
+  diagnosticNotice.value = ''
+  diagnostics.value = null
+  try {
+    diagnostics.value = await request<Diagnostics>('/system/diagnostics')
+  } catch (reason) {
+    showError(reason)
+  }
+}
+
+function closeDiagnostics() {
+  selectedDiagnostic.value = null
+  pendingDiagnosticsClear.value = false
+  diagnosticsOpen.value = false
+}
+
+async function clearDiagnosticsConfirmed() {
+  busy.value = 'clear-diagnostics'
+  diagnosticNotice.value = ''
+  error.value = ''
+  try {
+    await request<void>('/system/diagnostics', { method: 'DELETE' })
+    selectedDiagnostic.value = null
+    pendingDiagnosticsClear.value = false
+    diagnostics.value = await request<Diagnostics>('/system/diagnostics')
+    diagnosticNotice.value = '历史诊断记录已清空；当前内容从本次清理后开始。'
+  } catch (reason) {
+    showError(reason)
+  } finally {
+    busy.value = ''
+  }
+}
+
+function openDiagnostic(item: DiagnosticItem) {
+  if (!item.present) return
+  diagnosticNotice.value = ''
+  selectedDiagnostic.value = item
+}
+
+async function copyDiagnostic(item: DiagnosticItem) {
+  if (!item.present) return
+  const text = item.text || ''
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const input = document.createElement('textarea')
+    input.value = text
+    input.style.position = 'fixed'
+    input.style.opacity = '0'
+    document.body.append(input)
+    input.select()
+    const copied = document.execCommand('copy')
+    input.remove()
+    if (!copied) {
+      diagnosticNotice.value = `${item.name} 复制失败，请在独立窗口中手动选择。`
+      return
+    }
+  }
+  diagnosticNotice.value = `${item.name} 已复制。`
+}
+
+function replaceApp(item: AppView) {
+  const index = apps.value.findIndex((candidate) => candidate.id === item.id)
+  if (index < 0) apps.value = [item, ...apps.value]
+  else apps.value[index] = item
+}
+
+function sourceTags(candidate: DiscoveryCandidate) {
+  if (candidate.source === 'docker') {
+    const tags = [candidate.sourceDetail || '未命名容器']
+    if (candidate.networkMode && candidate.networkMode !== 'host') tags.push(candidate.networkMode)
+    return tags
+  }
+  const tags = [candidate.sourceDetail || '未知进程']
+  if (candidate.pid) tags.push(`PID ${candidate.pid}`)
+  return tags
+}
+
+function candidateSourceGroup(
+  candidate: Pick<DiscoveryCandidate, 'source' | 'networkMode'>,
+): Exclude<DiscoverySourceFilter, 'all'> {
+  if (candidate.source === 'host') return 'host'
+  return candidate.networkMode === 'host' ? 'docker-host' : 'docker'
+}
+
+function clearDiscoveryFilters() {
+  discoverySourceFilter.value = 'all'
+  hideInstalledCandidates.value = false
+}
+
+function originSourceTag(origin: Pick<AppOrigin, 'source' | 'networkMode'>) {
+  if (origin.source === 'manual') return '手动配置'
+  if (origin.source !== 'docker') return '宿主机'
+  return origin.networkMode === 'host' ? 'Docker Host' : 'Docker'
+}
+
+function appOriginTags(item: AppView) {
+  const origin = item.origin
+  if (!origin) return ['来源未记录']
+  const tags = [originSourceTag(origin)]
+  if (origin.sourceDetail) tags.push(origin.sourceDetail)
+  if (origin.networkMode && origin.networkMode !== 'host') tags.push(origin.networkMode)
+  if (origin.pid) tags.push(`PID ${origin.pid}`)
+  if (origin.watchCow) tags.push('WatchCow')
+  if (origin.description && origin.description !== origin.sourceDetail)
+    tags.push(origin.description)
+  return tags
+}
+
+function endpointAddress(candidate: DiscoveryCandidate) {
+  const address = candidate.address || '127.0.0.1'
+  if (address === '0.0.0.0' || address === '*') return '127.0.0.1'
+  if (address === '::') return '[::1]'
+  return address.includes(':') ? `[${address}]` : address
+}
+
+function suggestionLabel(candidate: DiscoveryCandidate) {
+  if (candidate.registrationSuggestion === 'already-registered') return '已由 DockFN 登记'
+  if (candidate.registrationSuggestion === 'existing-fnos-application')
+    return `已存在 fnOS 应用：${candidate.existingApplication}`
+  return '可创建'
+}
+
+function showError(reason: unknown) {
+  if (reason instanceof APIError) {
+    if (reason.code === 'FNOS_OPERATION_FAILED') {
+      error.value = 'fnOS 应用登记未完成。DockFN 已保留安装诊断；请打开“诊断”查看详情后重试。'
+      return
+    }
+    error.value = `${reason.message}${reason.suggestion ? ` ${reason.suggestion}` : ''}`
+  } else {
+    error.value = reason instanceof Error ? reason.message : '操作失败，请稍后重试。'
+  }
+}
+
+function readDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+}
+
+onMounted(loadApps)
+onBeforeUnmount(clearPathIconTimer)
+</script>
+
+<template>
+  <div class="page-shell">
+    <section class="app-frame" aria-label="DockFN 管理界面">
+      <header class="topbar">
+        <div class="brand-block">
+          <img class="brand-mark" :src="dockfnLogo" alt="DockFN" />
+          <div>
+            <div class="brand-line"><strong>DockFN</strong><span>飞牛应用坞</span></div>
+            <p>把已有 Web 服务接入 fnOS 桌面</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="quiet-button" type="button" aria-label="打开诊断" @click="openDiagnostics">
+            <Icon icon="solar:health-linear" aria-hidden="true" />
+            <span>诊断</span>
+          </button>
+          <button class="primary-button" type="button" @click="beginCreate">
+            <Icon icon="solar:add-circle-linear" aria-hidden="true" />
+            <span>新增应用</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace" aria-labelledby="application-heading">
+        <div class="workspace-head">
+          <div>
+            <p class="eyebrow">REGISTERED APPLICATIONS</p>
+            <h1 id="application-heading">
+              已注册应用 <span>{{ apps.length }}</span>
+            </h1>
+          </div>
+          <label class="search">
+            <Icon icon="solar:magnifer-linear" aria-hidden="true" />
+            <input v-model="search" type="search" placeholder="搜索应用或端口" />
+          </label>
+        </div>
+
+        <div v-if="notice" class="message success" role="status">
+          <Icon icon="solar:check-circle-linear" aria-hidden="true" />
+          <span>{{ notice }}</span>
+          <button type="button" aria-label="关闭提示" @click="notice = ''">
+            <Icon icon="solar:close-circle-linear" />
+          </button>
+        </div>
+        <div v-if="error" class="message error" role="alert">
+          <Icon icon="solar:danger-triangle-linear" aria-hidden="true" />
+          <span>{{ error }}</span>
+          <button type="button" aria-label="关闭错误" @click="error = ''">
+            <Icon icon="solar:close-circle-linear" />
+          </button>
+        </div>
+
+        <div v-if="loading" class="empty-state">
+          <Icon class="loader" icon="solar:refresh-linear" />正在读取应用…
+        </div>
+        <div v-else-if="filteredApps.length === 0" class="empty-state">
+          <img class="empty-logo" :src="dockfnLogo" alt="" />
+          <h2>{{ apps.length ? '没有匹配的应用' : '还没有 DockFN 应用' }}</h2>
+          <p>{{ apps.length ? '换个关键词试试。' : '扫描本地 Web 服务，或直接手动填写入口。' }}</p>
+          <button v-if="!apps.length" class="primary-button" type="button" @click="beginCreate">
+            <Icon icon="solar:add-circle-linear" aria-hidden="true" />新增第一个应用
+          </button>
+        </div>
+
+        <div v-else class="app-list" aria-live="polite">
+          <article v-for="item in filteredApps" :key="item.id" class="app-card">
+            <div class="app-icon-wrap">
+              <img
+                class="app-icon"
+                :src="item.iconDataUrl || dockfnLogo"
+                :alt="`${item.displayName} 图标`"
+              />
+              <img
+                class="dockfn-badge"
+                :src="dockfnLogo"
+                alt="由 DockFN 创建"
+                title="由 DockFN 创建"
+              />
+            </div>
+            <div class="app-identity">
+              <div class="name-row">
+                <h2 :title="`${item.displayName} · ${item.appName}`">{{ item.displayName }}</h2>
+                <span class="revision">r{{ item.revision }}</span>
+              </div>
+              <div
+                class="app-origin-tags"
+                :title="[item.appName, ...appOriginTags(item)].join(' · ')"
+                :aria-label="`来源：${appOriginTags(item).join('，')}`"
+              >
+                <span
+                  v-for="(tag, index) in appOriginTags(item)"
+                  :key="`${index}:${tag}`"
+                  class="app-origin-tag"
+                  :class="{ primary: index === 0 }"
+                  >{{ tag }}</span
+                >
+              </div>
+            </div>
+            <div class="endpoint">
+              <span>{{ item.protocol.toUpperCase() }} · {{ item.openType.toUpperCase() }}</span>
+              <strong>{{ item.port }}</strong>
+              <small>{{ item.path }}</small>
+            </div>
+            <div class="statuses">
+              <Icon
+                :icon="
+                  item.status.registration === 'installed'
+                    ? 'solar:verified-check-linear'
+                    : 'solar:danger-triangle-linear'
+                "
+                aria-hidden="true"
+              />
+              <div>
+                <strong>{{
+                  item.status.registration === 'installed'
+                    ? '入口已登记'
+                    : item.status.registration === 'missing'
+                      ? '登记壳缺失'
+                      : '待诊断'
+                }}</strong>
+                <small :class="item.status.target">{{
+                  item.status.target === 'available' ? '目标端口可用' : '目标端口不可用'
+                }}</small>
+              </div>
+            </div>
+            <div class="actions">
+              <button
+                class="icon-action"
+                type="button"
+                :disabled="!!busy"
+                aria-label="检测登记壳"
+                @click="runAction(item, 'check')"
+              >
+                <Icon icon="solar:refresh-linear" />
+              </button>
+              <button
+                class="icon-action"
+                type="button"
+                :disabled="!!busy"
+                aria-label="编辑应用"
+                @click="beginEdit(item)"
+              >
+                <Icon icon="solar:pen-linear" />
+              </button>
+              <button
+                v-if="item.status.registration !== 'installed'"
+                class="icon-action"
+                type="button"
+                :disabled="!!busy"
+                aria-label="修复登记壳"
+                @click="runAction(item, 'repair')"
+              >
+                <Icon icon="solar:restart-linear" />
+              </button>
+              <button
+                class="icon-action danger"
+                type="button"
+                :disabled="!!busy"
+                aria-label="移除应用入口"
+                @click="pendingRemoval = item"
+              >
+                <Icon icon="solar:trash-bin-trash-linear" />
+              </button>
+            </div>
+            <p v-if="item.status.lastError" class="last-error">{{ item.status.lastError }}</p>
+          </article>
+        </div>
+      </main>
+    </section>
+
+    <Transition name="fade">
+      <div
+        v-if="creatorOpen"
+        class="overlay creator-overlay"
+        @click.self="!busy && (creatorOpen = false)"
+      >
+        <section
+          class="creator-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="creator-title"
+        >
+          <header class="dialog-head">
+            <div class="brand-block compact">
+              <img class="brand-mark" :src="dockfnLogo" alt="" />
+              <div>
+                <p class="eyebrow">
+                  {{
+                    editing
+                      ? 'EDIT APPLICATION'
+                      : creatorStep === 'complete'
+                        ? busy === 'submit'
+                          ? 'CREATING APPLICATION'
+                          : 'APPLICATION READY'
+                        : 'CREATE APPLICATION'
+                  }}
+                </p>
+                <h2 id="creator-title">
+                  {{
+                    editing
+                      ? '编辑 DockFN 应用'
+                      : creatorStep === 'complete'
+                        ? busy === 'submit'
+                          ? '正在创建 DockFN 应用'
+                          : '应用创建完成'
+                        : '新增 DockFN 应用'
+                  }}
+                </h2>
+              </div>
+            </div>
+            <button
+              class="icon-action"
+              type="button"
+              :disabled="!!busy"
+              aria-label="关闭"
+              @click="creatorOpen = false"
+            >
+              <Icon icon="solar:close-circle-linear" />
+            </button>
+          </header>
+
+          <ol v-if="!editing" class="stepper" aria-label="创建步骤">
+            <li
+              data-step="discover"
+              :class="{ active: creatorStep === 'discover', done: creatorStep !== 'discover' }"
+            >
+              <span>1</span>发现服务
+            </li>
+            <li
+              data-step="review"
+              :class="{ active: creatorStep === 'review', done: creatorStep === 'complete' }"
+            >
+              <span>2</span>核对信息
+            </li>
+            <li data-step="complete" :class="{ active: creatorStep === 'complete' }">
+              <span>3</span>创建应用
+            </li>
+          </ol>
+
+          <section v-if="creatorStep === 'discover'" class="discovery-step">
+            <div class="discovery-copy">
+              <div>
+                <h3>从本机发现 Web 服务</h3>
+                <p>扫描本机 Web 服务；选择候选并确认后创建应用。</p>
+              </div>
+              <div class="discovery-copy-actions">
+                <button class="secondary-button" type="button" @click="beginManualCreate">
+                  <Icon icon="solar:pen-new-square-linear" />手动填写
+                </button>
+                <button
+                  class="primary-button"
+                  type="button"
+                  :disabled="scanning"
+                  @click="scanServices"
+                >
+                  <Icon icon="solar:radar-2-linear" />{{
+                    scanning ? '扫描中…' : scanCompleted ? '重新扫描' : '扫描本地服务'
+                  }}
+                </button>
+              </div>
+            </div>
+            <div v-if="candidates.length" class="discovery-results">
+              <section class="discovery-filters" aria-label="发现结果筛选">
+                <div class="discovery-filter-line">
+                  <span class="discovery-filter-label">服务类型</span>
+                  <div class="discovery-filter-options">
+                    <button
+                      v-for="option in discoverySourceOptions"
+                      :key="option.key"
+                      class="filter-chip"
+                      :class="{ active: discoverySourceFilter === option.key }"
+                      type="button"
+                      :aria-pressed="discoverySourceFilter === option.key"
+                      :data-filter-source="option.key"
+                      @click="discoverySourceFilter = option.key"
+                    >
+                      {{ option.label }}<small>{{ option.count }}</small>
+                    </button>
+                  </div>
+                  <label class="installed-filter" :class="{ active: hideInstalledCandidates }">
+                    <input v-model="hideInstalledCandidates" type="checkbox" />
+                    <span>隐藏已安装</span><small>{{ installedCandidateCount }}</small>
+                  </label>
+                  <span class="discovery-result-count">
+                    显示 {{ visibleCandidates.length }} / {{ candidates.length }}
+                  </span>
+                </div>
+              </section>
+              <div v-if="groupedCandidates.length" class="candidate-list">
+                <section
+                  v-for="sourceGroup in groupedCandidates"
+                  :key="sourceGroup.key"
+                  class="candidate-source-group"
+                >
+                  <header class="candidate-source-heading">
+                    <span class="candidate-source" :class="sourceGroup.key">{{
+                      sourceGroup.label
+                    }}</span>
+                    <span
+                      >{{ sourceGroup.groups.length }} 个服务 ·
+                      {{ sourceGroup.portCount }} 个端口</span
+                    >
+                  </header>
+                  <section
+                    v-for="group in sourceGroup.groups"
+                    :key="group.key"
+                    class="candidate-group"
+                  >
+                    <header>
+                      <div class="candidate-group-tags">
+                        <span
+                          v-for="(tag, index) in group.tags"
+                          :key="tag"
+                          class="candidate-group-tag"
+                          :class="{ primary: index === 0 }"
+                          >{{ tag }}</span
+                        >
+                      </div>
+                      <span class="candidate-group-count"
+                        >{{ group.items.length }} 个 Web 端口</span
+                      >
+                    </header>
+                    <button
+                      v-for="candidate in group.items"
+                      :key="candidate.key"
+                      class="candidate-card"
+                      type="button"
+                      :disabled="candidate.registrationSuggestion !== 'available'"
+                      :title="
+                        candidate.registrationSuggestion === 'available'
+                          ? '选择此 Web 服务'
+                          : suggestionLabel(candidate)
+                      "
+                      @click="selectCandidate(candidate)"
+                    >
+                      <span class="candidate-main"
+                        ><strong
+                          >{{ candidate.displayName
+                          }}<em v-if="candidate.preferred">WatchCow 主入口</em></strong
+                        ><small
+                          >{{ candidate.protocol.toUpperCase() }}://{{
+                            endpointAddress(candidate)
+                          }}:{{ candidate.port }}{{ candidate.path }}</small
+                        ></span
+                      >
+                      <span class="candidate-meta"
+                        ><small>{{
+                          candidate.ownerConfidence ? `归属：${candidate.ownerConfidence}` : ''
+                        }}</small
+                        ><em :class="candidate.registrationSuggestion">{{
+                          suggestionLabel(candidate)
+                        }}</em></span
+                      >
+                      <Icon
+                        :icon="
+                          candidate.registrationSuggestion === 'available'
+                            ? 'solar:alt-arrow-right-linear'
+                            : 'solar:forbidden-circle-linear'
+                        "
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </section>
+                </section>
+              </div>
+              <div v-else class="filtered-empty">
+                <Icon icon="solar:filter-linear" aria-hidden="true" />
+                <span
+                  ><strong>没有符合当前筛选的服务</strong
+                  ><small>可调整服务类型或显示已安装项目。</small></span
+                >
+                <button class="secondary-button" type="button" @click="clearDiscoveryFilters">
+                  显示全部
+                </button>
+              </div>
+            </div>
+            <div v-else class="discovery-empty">
+              <Icon icon="solar:radar-2-linear" /><span>{{
+                scanning ? '正在识别可访问的 Web 服务…' : '暂无可选服务，可重新扫描或手动填写。'
+              }}</span>
+            </div>
+          </section>
+
+          <form v-else-if="creatorStep === 'review'" class="review-step" @submit.prevent="submit">
+            <div v-if="busy === 'submit'" class="submit-progress" role="status" aria-live="polite">
+              <Icon class="loader" icon="solar:refresh-linear" aria-hidden="true" />
+              <span
+                ><strong>正在提交 fnOS 应用中心</strong
+                ><small>正在生成、安装并校验桌面入口，请勿关闭窗口。</small></span
+              >
+            </div>
+            <div v-if="error" class="review-error" role="alert">
+              <Icon icon="solar:danger-triangle-linear" aria-hidden="true" />
+              <span>{{ error }}</span>
+            </div>
+            <div class="form-columns">
+              <label
+                ><span>显示名称</span
+                ><input
+                  v-model="form.displayName"
+                  required
+                  maxlength="80"
+                  placeholder="例如：家庭相册"
+              /></label>
+              <label
+                ><span>访问路径</span
+                ><input
+                  v-model="form.path"
+                  required
+                  maxlength="512"
+                  placeholder="/"
+                  @input="schedulePathIconDiscovery"
+              /></label>
+              <label
+                ><span>说明</span
+                ><input v-model="form.description" maxlength="500" placeholder="留空则使用显示名称"
+              /></label>
+              <label
+                ><span>fnOS 入口 ID</span
+                ><input
+                  v-model="form.entryPrefix"
+                  maxlength="27"
+                  pattern="[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?"
+                  :aria-invalid="!entryPrefixValid"
+                  placeholder="留空则自动生成"
+                /><small class="field-help"
+                  >完整入口 ID：<code>{{ entryNamePreview }}</code
+                  >，创建后可修改。</small
+                ></label
+              >
+              <fieldset class="open-type-field">
+                <legend>打开方式</legend>
+                <div class="segmented-control" role="radiogroup" aria-label="打开方式">
+                  <button
+                    :class="{ active: form.openType === 'url' }"
+                    type="button"
+                    role="radio"
+                    data-value="url"
+                    :aria-checked="form.openType === 'url'"
+                    @click="form.openType = 'url'"
+                  >
+                    URL 独立打开
+                  </button>
+                  <button
+                    :class="{ active: form.openType === 'iframe' }"
+                    type="button"
+                    role="radio"
+                    data-value="iframe"
+                    :aria-checked="form.openType === 'iframe'"
+                    @click="form.openType = 'iframe'"
+                  >
+                    嵌入窗口
+                  </button>
+                </div>
+              </fieldset>
+              <div class="form-grid">
+                <label
+                  ><span>协议</span
+                  ><select v-model="form.protocol">
+                    <option value="http">HTTP</option>
+                    <option value="https">HTTPS</option>
+                  </select></label
+                ><label
+                  ><span>端口</span
+                  ><input v-model.number="form.port" required type="number" min="1" max="65535"
+                /></label>
+              </div>
+            </div>
+            <div class="icon-source">
+              <div class="icon-preview-wrap">
+                <img :src="iconPreview || dockfnLogo" alt="应用图标预览" /><img
+                  class="dockfn-badge"
+                  :src="dockfnLogo"
+                  alt="DockFN 角标"
+                />
+              </div>
+              <div class="icon-source-controls">
+                <span class="field-title">应用图标</span>
+                <button
+                  class="icon-discover-button"
+                  type="button"
+                  :disabled="iconDiscoveryStatus === 'loading' || !!busy"
+                  @click="rediscoverPathIcon"
+                >
+                  <Icon
+                    :class="{ loader: iconDiscoveryStatus === 'loading' }"
+                    :icon="
+                      iconDiscoveryStatus === 'loading'
+                        ? 'solar:refresh-linear'
+                        : 'solar:radar-2-linear'
+                    "
+                    aria-hidden="true"
+                  />{{ iconDiscoveryStatus === 'loading' ? '识别中…' : '从路径识别' }}
+                </button>
+                <label class="file-button"
+                  ><Icon icon="solar:upload-minimalistic-linear" />选择图片<input
+                    type="file"
+                    accept="image/png,image/jpeg,image/x-icon,image/vnd.microsoft.icon,.ico"
+                    @change="selectIcon"
+                /></label>
+                <label class="uri-input"
+                  ><Icon icon="solar:link-linear" /><input
+                    v-model="form.iconUri"
+                    type="text"
+                    placeholder="/favicon.ico、127.0.0.1:8080/favicon.ico 或完整 URI"
+                    @input="onIconURIInput"
+                    @change="refreshIconURI"
+                /></label>
+                <button v-if="iconPreview" class="text-button" type="button" @click="removeIcon">
+                  清除图标
+                </button>
+                <small
+                  v-if="iconDiscoveryStatus === 'found'"
+                  class="icon-discovery-status found"
+                  role="status"
+                  >已按当前路径识别</small
+                >
+                <small
+                  v-else-if="iconDiscoveryStatus === 'missing'"
+                  class="icon-discovery-status missing"
+                  role="status"
+                  >当前页面未声明可用图标，已保留现有或默认图标</small
+                >
+              </div>
+            </div>
+            <label class="toggle-line"
+              ><input v-model="form.allUsers" type="checkbox" /><span
+                ><strong>所有 fnOS 用户可见</strong><small>关闭时仅管理员可见。</small></span
+              ></label
+            >
+            <footer class="dialog-actions">
+              <button
+                v-if="!editing"
+                class="secondary-button"
+                type="button"
+                :disabled="!!busy"
+                @click="backToDiscovery"
+              >
+                <Icon icon="solar:arrow-left-linear" />返回发现
+              </button>
+              <button
+                class="secondary-button"
+                type="button"
+                :disabled="!!busy"
+                @click="creatorOpen = false"
+              >
+                取消
+              </button>
+              <button class="primary-button" type="submit" :disabled="!!busy || !entryPrefixValid">
+                <Icon
+                  :class="{ loader: busy === 'submit' }"
+                  :icon="busy === 'submit' ? 'solar:refresh-linear' : 'solar:check-circle-linear'"
+                />{{
+                  busy === 'submit' ? '正在创建…' : editing ? '保存更新' : '确认创建 DockFN 应用'
+                }}
+              </button>
+            </footer>
+          </form>
+          <section v-else class="completion-step" aria-live="polite">
+            <div v-if="busy === 'submit'" class="completion-progress" role="status">
+              <div class="completion-loader">
+                <Icon class="loader" icon="solar:refresh-linear" aria-hidden="true" />
+                <img :src="iconPreview || dockfnLogo" alt="" />
+              </div>
+              <p class="eyebrow">INSTALLING FNOS ENTRY</p>
+              <h3>正在创建应用入口</h3>
+              <p>正在生成应用壳、提交 fnOS 应用中心并校验入口，请勿关闭窗口。</p>
+              <div class="completion-progress-line" aria-hidden="true"><span></span></div>
+            </div>
+            <div v-else-if="completedApp" class="completion-card">
+              <div class="completion-visual">
+                <div class="completion-icon-wrap">
+                  <img :src="completedApp?.iconDataUrl || dockfnLogo" alt="" />
+                  <img class="dockfn-badge" :src="dockfnLogo" alt="DockFN 角标" />
+                </div>
+                <Icon class="completion-check" icon="solar:check-circle-bold" aria-hidden="true" />
+              </div>
+              <p class="eyebrow">FNOS REGISTRATION COMPLETE</p>
+              <h3>应用创建完成</h3>
+              <p>
+                <strong>{{ completedApp?.displayName }}</strong>
+                已生成应用壳并通过 fnOS 入口校验。
+              </p>
+              <dl v-if="completedApp" class="completion-details">
+                <div>
+                  <dt>入口 ID</dt>
+                  <dd>{{ completedApp.appName }}</dd>
+                </div>
+                <div>
+                  <dt>目标服务</dt>
+                  <dd>
+                    {{ completedApp.protocol.toUpperCase() }} · {{ completedApp.port
+                    }}{{ completedApp.path }}
+                  </dd>
+                </div>
+              </dl>
+              <footer class="completion-actions">
+                <button
+                  class="secondary-button"
+                  type="button"
+                  data-completion-action="close"
+                  @click="creatorOpen = false"
+                >
+                  关闭
+                </button>
+                <button
+                  class="primary-button"
+                  type="button"
+                  data-completion-action="continue"
+                  @click="beginCreate"
+                >
+                  <Icon icon="solar:add-circle-linear" aria-hidden="true" />继续创建
+                </button>
+              </footer>
+            </div>
+          </section>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div v-if="diagnosticsOpen" class="overlay modal-overlay" @click.self="closeDiagnostics">
+        <section
+          class="diagnostics-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="diagnostics-title"
+        >
+          <header class="dialog-head">
+            <div>
+              <p class="eyebrow">SYSTEM DIAGNOSTICS</p>
+              <h2 id="diagnostics-title">DockFN 诊断</h2>
+            </div>
+            <div class="diagnostics-head-actions">
+              <button
+                class="secondary-button diagnostics-clear-button"
+                type="button"
+                aria-label="清空诊断历史"
+                :disabled="!!busy || !diagnostics"
+                @click="pendingDiagnosticsClear = true"
+              >
+                <Icon icon="solar:trash-bin-minimalistic-linear" />清空记录
+              </button>
+              <button class="icon-action" type="button" aria-label="关闭" @click="closeDiagnostics">
+                <Icon icon="solar:close-circle-linear" />
+              </button>
+            </div>
+          </header>
+          <div class="diagnostics-summary">
+            <p>仅显示 DockFN 生命周期、服务和权限助手的最近日志；敏感字段已脱敏。</p>
+            <div v-if="diagnosticNotice" class="diagnostic-notice" role="status">
+              {{ diagnosticNotice }}
+            </div>
+          </div>
+          <div v-if="!diagnostics" class="diagnostics-loading">
+            <Icon class="loader" icon="solar:refresh-linear" />正在读取诊断信息…
+          </div>
+          <div v-else class="diagnostic-logs">
+            <article v-for="log in diagnosticItems" :key="log.name">
+              <header class="diagnostic-card-head">
+                <h3>
+                  <Icon
+                    :icon="log.present ? 'solar:document-text-linear' : 'solar:file-remove-linear'"
+                  />{{ log.name }}
+                </h3>
+                <div>
+                  <button
+                    class="log-action"
+                    type="button"
+                    :disabled="!log.present"
+                    :aria-label="`独立查看 ${log.name}`"
+                    @click="openDiagnostic(log)"
+                  >
+                    <Icon icon="solar:maximize-square-3-linear" />独立查看
+                  </button>
+                  <button
+                    class="log-action"
+                    type="button"
+                    :disabled="!log.present"
+                    :aria-label="`复制 ${log.name}`"
+                    @click="copyDiagnostic(log)"
+                  >
+                    <Icon icon="solar:copy-linear" />复制
+                  </button>
+                </div>
+              </header>
+              <pre>{{ log.present ? log.text || '日志文件为空。' : '尚未生成该日志文件。' }}</pre>
+            </article>
+          </div>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div
+        v-if="pendingDiagnosticsClear"
+        class="overlay diagnostics-clear-overlay"
+        @click.self="pendingDiagnosticsClear = false"
+      >
+        <section
+          class="confirm-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="clear-diagnostics-title"
+        >
+          <Icon class="warning-icon" icon="solar:danger-triangle-linear" />
+          <p class="eyebrow">CLEAR DIAGNOSTICS</p>
+          <h2 id="clear-diagnostics-title">清空 DockFN 诊断历史？</h2>
+          <p>
+            只会截断 DockFN 的
+            <code>server/helper/lifecycle</code> 日志并移除最近扫描、安装失败报告。<strong
+              >不会清理 fnOS、应用中心、Docker 或目标服务日志。</strong
+            >
+            历史内容无法恢复。
+          </p>
+          <footer class="dialog-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              :disabled="!!busy"
+              @click="pendingDiagnosticsClear = false"
+            >
+              取消</button
+            ><button
+              class="danger-button"
+              type="button"
+              :disabled="!!busy"
+              @click="clearDiagnosticsConfirmed"
+            >
+              <Icon
+                :class="{ loader: busy === 'clear-diagnostics' }"
+                :icon="
+                  busy === 'clear-diagnostics'
+                    ? 'solar:refresh-linear'
+                    : 'solar:trash-bin-trash-linear'
+                "
+              />{{ busy === 'clear-diagnostics' ? '正在清空…' : '确认清空记录' }}
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div
+        v-if="selectedDiagnostic"
+        class="overlay log-viewer-overlay"
+        @click.self="selectedDiagnostic = null"
+      >
+        <section
+          class="log-viewer-dialog"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="`${selectedDiagnostic.name} 完整内容`"
+        >
+          <header class="dialog-head">
+            <div>
+              <p class="eyebrow">FULL DIAGNOSTIC</p>
+              <h2>{{ selectedDiagnostic.name }}</h2>
+            </div>
+            <div class="log-viewer-actions">
+              <span v-if="diagnosticNotice" class="log-copy-status" role="status">{{
+                diagnosticNotice
+              }}</span>
+              <button
+                class="secondary-button"
+                type="button"
+                :aria-label="`复制完整 ${selectedDiagnostic.name}`"
+                @click="copyDiagnostic(selectedDiagnostic)"
+              >
+                <Icon icon="solar:copy-linear" />复制全文
+              </button>
+              <button
+                class="icon-action"
+                type="button"
+                aria-label="关闭独立日志窗口"
+                @click="selectedDiagnostic = null"
+              >
+                <Icon icon="solar:close-circle-linear" />
+              </button>
+            </div>
+          </header>
+          <pre>{{ selectedDiagnostic.text || '日志文件为空。' }}</pre>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div v-if="pendingRemoval" class="overlay modal-overlay" @click.self="pendingRemoval = null">
+        <section
+          class="confirm-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="remove-title"
+        >
+          <Icon class="warning-icon" icon="solar:danger-triangle-linear" />
+          <p class="eyebrow">REMOVE ENTRY</p>
+          <h2 id="remove-title">移除“{{ pendingRemoval.displayName }}”？</h2>
+          <p>
+            该操作只会卸载 DockFN 创建的 fnOS 应用入口，<strong
+              >不会停止或删除目标服务、Docker 容器、存储卷及业务数据。</strong
+            >
+          </p>
+          <footer class="dialog-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              :disabled="!!busy"
+              @click="pendingRemoval = null"
+            >
+              取消</button
+            ><button
+              class="danger-button"
+              type="button"
+              :disabled="!!busy"
+              @click="removeConfirmed"
+            >
+              <Icon icon="solar:trash-bin-trash-linear" />仅移除应用入口
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Transition>
+  </div>
+</template>

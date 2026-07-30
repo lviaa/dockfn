@@ -1,0 +1,14 @@
+.git
+.tools
+.local-data
+.qa-data
+qa
+bin
+dist
+data
+internal/webui/dist
+web/dist
+web/node_modules
+*.db
+*.db-shm
+*.db-wal

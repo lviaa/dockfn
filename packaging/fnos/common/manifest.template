@@ -1,0 +1,15 @@
+appname=dockfn
+display_name=飞牛应用坞
+version={{VERSION}}
+desc=将本机 Web 服务登记为 fnOS 应用入口。
+platform={{PLATFORM}}
+arch={{ARCH}}
+source=thirdparty
+maintainer=DockFN Project
+distributor=DockFN Project
+os_min_version=1.1.3100
+desktop_uidir=ui
+desktop_applaunchname=dockfn.main
+ctl_stop=true
+checkport=false
+disable_authorization_path=true

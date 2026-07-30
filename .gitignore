@@ -1,0 +1,16 @@
+bin/
+dist/
+.local-data/
+.qa-data/
+qa/
+web/dist/
+web/node_modules/
+web/test-results/
+web/playwright-report/
+data/
+*.db
+*.db-shm
+*.db-wal
+coverage/
+.env
+.tools/

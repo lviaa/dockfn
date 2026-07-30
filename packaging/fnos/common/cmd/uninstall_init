@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+binary="${TRIM_APPDEST:?}/target/dockfn"
+run_dir="${TRIM_PKGVAR:?}/run"
+data_dir="${TRIM_PKGVAR}/data"
+staging_dir="${data_dir}/staging"
+helper_socket="${run_dir}/helper.sock"
+helper_pid="${run_dir}/uninstall-helper.pid"
+log="${TRIM_TEMP_LOGFILE:-${TRIM_PKGVAR}/logs/lifecycle.log}"
+package_group="${TRIM_GROUPNAME:-dockfn}"
+mode=keep
+[ "${keep_registrations:-true}" = false ] && mode=remove
+
+temporary_helper=
+cleanup() {
+  if [ -n "$temporary_helper" ]; then
+    kill "$temporary_helper" 2>/dev/null || true
+    wait "$temporary_helper" 2>/dev/null || true
+    rm -f "$helper_pid"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [ "$mode" = remove ] && [ ! -S "$helper_socket" ]; then
+  package_gid="$(getent group "$package_group" | cut -d: -f3)"
+  mkdir -p "$run_dir" "$staging_dir"
+  DOCKFN_DATA_DIR="$data_dir" \
+  DOCKFN_STAGING_DIR="$staging_dir" \
+  DOCKFN_HELPER_SOCKET="$helper_socket" \
+  DOCKFN_HELPER_GID="$package_gid" \
+    "$binary" helper >>"$log" 2>&1 &
+  temporary_helper=$!
+  echo "$temporary_helper" >"$helper_pid"
+  attempts=0
+  until [ -S "$helper_socket" ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 30 ] || ! kill -0 "$temporary_helper" 2>/dev/null; then
+      echo "无法启动 DockFN 临时权限助手；卸载已停止，任何入口和目标服务均未修改。" >>"$log"
+      exit 1
+    fi
+    sleep 1
+  done
+fi
+
+DOCKFN_DATA_DIR="$data_dir" \
+DOCKFN_STAGING_DIR="$staging_dir" \
+DOCKFN_HELPER_SOCKET="$helper_socket" \
+  "$binary" prepare-uninstall --registrations="$mode" >>"$log" 2>&1
+echo "DockFN 卸载准备完成；目标服务、容器、卷和业务数据均未修改。" >>"$log"

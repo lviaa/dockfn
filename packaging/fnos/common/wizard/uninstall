@@ -1,0 +1,21 @@
+[
+  {
+    "stepTitle": "卸载飞牛应用坞",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "只处理 DockFN 创建的 fnOS 应用入口；不会停止或删除目标服务、容器、卷及业务数据。"
+      },
+      {
+        "type": "radio",
+        "field": "keep_registrations",
+        "label": "如何处理已创建的应用入口",
+        "initValue": "true",
+        "options": [
+          { "label": "保留应用入口（推荐）", "value": "true" },
+          { "label": "移除 DockFN 创建的应用入口", "value": "false" }
+        ]
+      }
+    ]
+  }
+]

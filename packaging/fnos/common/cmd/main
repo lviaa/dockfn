@@ -1,0 +1,127 @@
+#!/bin/sh
+set -eu
+
+binary="${TRIM_APPDEST:?}/target/dockfn"
+app_dir="${TRIM_APPDEST}"
+run_dir="${TRIM_PKGVAR:?}/run"
+data_dir="${TRIM_PKGVAR}/data"
+staging_dir="${data_dir}/staging"
+log_dir="${TRIM_PKGVAR}/logs"
+helper_socket="${run_dir}/helper.sock"
+gateway_socket="${TRIM_APPDEST}/app.sock"
+helper_pid="${run_dir}/helper.pid"
+server_pid="${run_dir}/server.pid"
+log="${TRIM_TEMP_LOGFILE:-${log_dir}/lifecycle.log}"
+package_user="${TRIM_USERNAME:-dockfn}"
+package_group="${TRIM_GROUPNAME:-$package_user}"
+daemon=/usr/sbin/start-stop-daemon
+
+mkdir -p "$run_dir" "$data_dir" "$staging_dir" "$log_dir"
+
+[ "$(id -u)" -eq 0 ] || {
+  echo "DockFN 生命周期脚本必须由 root 执行。" >>"$log"
+  exit 1
+}
+[ -x "$binary" ] || {
+  echo "DockFN 主程序不可执行。" >>"$log"
+  exit 1
+}
+[ -x "$daemon" ] || {
+  echo "DockFN 需要 start-stop-daemon。" >>"$log"
+  exit 1
+}
+id "$package_user" >/dev/null 2>&1 || {
+  echo "DockFN 应用用户不存在：$package_user" >>"$log"
+  exit 1
+}
+package_gid="$(getent group "$package_group" | cut -d: -f3)"
+[ -n "$package_gid" ] || {
+  echo "DockFN 应用组不存在：$package_group" >>"$log"
+  exit 1
+}
+
+chown -R "$package_user:$package_group" "$data_dir"
+chown root:"$package_group" "$app_dir" "$run_dir" "$log_dir"
+chmod 0770 "$app_dir" "$run_dir" "$log_dir"
+chmod 0750 "$data_dir" "$staging_dir"
+
+running() {
+  [ -s "$1" ] && kill -0 "$(sed -n '1p' "$1")" 2>/dev/null
+}
+
+start_helper() {
+  running "$helper_pid" && return
+  env \
+    DOCKFN_DATA_DIR="$data_dir" \
+    DOCKFN_STAGING_DIR="$staging_dir" \
+    DOCKFN_HELPER_SOCKET="$helper_socket" \
+    DOCKFN_HELPER_GID="$package_gid" \
+    "$daemon" -S -b -m -p "$helper_pid" -c "0:$package_gid" -x "$binary" \
+      -O "${log_dir}/helper.log" -- helper
+  attempts=0
+  until [ -S "$helper_socket" ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 30 ] || ! running "$helper_pid"; then
+      echo "DockFN 权限助手未能启动。" >>"$log"
+      exit 1
+    fi
+    sleep 1
+  done
+  chown root:"$package_group" "$helper_socket"
+  chmod 0660 "$helper_socket"
+}
+
+start_server() {
+  running "$server_pid" && return
+  env \
+    DOCKFN_DATA_DIR="$data_dir" \
+    DOCKFN_STAGING_DIR="$staging_dir" \
+    DOCKFN_HELPER_SOCKET="$helper_socket" \
+    DOCKFN_GATEWAY_SOCKET="$gateway_socket" \
+    DOCKFN_GATEWAY_PREFIX="/app/dockfn" \
+    "$daemon" -S -b -m -p "$server_pid" -c "$package_user:$package_group" -x "$binary" \
+      -O "${log_dir}/server.log" -- server
+  attempts=0
+  until [ -S "$gateway_socket" ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 30 ] || ! running "$server_pid"; then
+      echo "DockFN 管理进程未能启动。" >>"$log"
+      [ -s "${log_dir}/server.log" ] && tail -n 50 "${log_dir}/server.log" >>"$log"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+stop_pid() {
+  file="$1"
+  if running "$file"; then
+    kill "$(sed -n '1p' "$file")" 2>/dev/null || true
+    attempts=0
+    while running "$file" && [ "$attempts" -lt 20 ]; do
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+  fi
+  rm -f "$file"
+}
+
+case "${1:-}" in
+  start)
+    start_helper
+    start_server
+    ;;
+  stop)
+    stop_pid "$server_pid"
+    stop_pid "$helper_pid"
+    rm -f "$gateway_socket" "$helper_socket"
+    ;;
+  status)
+    running "$server_pid" && running "$helper_pid" && [ -S "$gateway_socket" ] && exit 0
+    exit 3
+    ;;
+  *)
+    echo "usage: $0 start|stop|status" >>"$log"
+    exit 1
+    ;;
+esac

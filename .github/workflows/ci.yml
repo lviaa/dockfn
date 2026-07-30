@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.5
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Test
+        run: make verify
+      - name: Build FPK
+        run: make fpk COMMIT="$GITHUB_SHA" BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dockfn-native-fpk
+          path: |
+            dist/fpk/dockfn-native-x86_64.fpk
+            dist/fpk/dockfn-native-arm64.fpk
+            dist/SHA256SUMS
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.5
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build release
+        run: make fpk VERSION="${GITHUB_REF_NAME#v}" COMMIT="$GITHUB_SHA" BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/fpk/*.fpk dist/SHA256SUMS --generate-notes

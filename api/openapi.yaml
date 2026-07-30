@@ -1,0 +1,563 @@
+openapi: 3.0.3
+info:
+  title: DockFN API
+  version: 0.1.0
+  description: >-
+    Administrative API for registering existing host Web services as fnOS
+    desktop entries. Discovery is read-only and never registers an application.
+servers:
+  - url: ./api
+security:
+  - fnOSSession: []
+paths:
+  /apps:
+    get:
+      operationId: listApplications
+      responses:
+        "200":
+          description: Registered DockFN applications
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationList"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createApplication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplicationInput"
+      responses:
+        "201":
+          description: Application entry created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationResult"
+        "422":
+          $ref: "#/components/responses/Problem"
+        "502":
+          $ref: "#/components/responses/Problem"
+  /apps/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationID"
+    get:
+      operationId: getApplication
+      responses:
+        "200":
+          description: Application
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+        "404":
+          $ref: "#/components/responses/Problem"
+    put:
+      operationId: updateApplication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplicationInput"
+      responses:
+        "200":
+          description: Application entry updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationResult"
+        "422":
+          $ref: "#/components/responses/Problem"
+        "502":
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: removeApplication
+      description: Removes only the DockFN-owned fnOS entry shell.
+      responses:
+        "204":
+          description: Application entry removed
+        "404":
+          $ref: "#/components/responses/Problem"
+        "502":
+          $ref: "#/components/responses/Problem"
+  /apps/{id}/check:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationID"
+    post:
+      operationId: checkApplication
+      responses:
+        "200":
+          description: Current registration and target status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+  /apps/{id}/repair:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationID"
+    post:
+      operationId: repairApplication
+      responses:
+        "200":
+          description: Entry regenerated and reinstalled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationResult"
+        "502":
+          $ref: "#/components/responses/Problem"
+  /apps/{id}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationID"
+    post:
+      operationId: rollbackApplication
+      responses:
+        "200":
+          description: Previous successful entry restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationResult"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /discovery/scan:
+    post:
+      operationId: scanWebServices
+      description: >-
+        Performs a one-shot, read-only scan of local listeners reachable over
+        IPv4, IPv4 Docker published ports, host-network container processes and
+        installed fnOS entries. IPv4-reachable dual-stack listeners are
+        included; IPv6-only bindings are outside the discovery boundary.
+      responses:
+        "200":
+          description: Ephemeral discovery candidates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoveryList"
+        "503":
+          $ref: "#/components/responses/Problem"
+  /icons/preview:
+    post:
+      operationId: previewApplicationIcon
+      description: >-
+        Fetches and validates one administrator-selected local icon URI, then
+        returns a normalized PNG data URL for form preview without persisting it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IconPreviewInput"
+      responses:
+        "200":
+          description: Browser-safe icon preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IconPreview"
+        "422":
+          $ref: "#/components/responses/Problem"
+  /icons/discover:
+    post:
+      operationId: discoverApplicationIcon
+      description: >-
+        Reads the selected local service page and returns its same-origin link
+        icon or a validated common service icon under the configured access
+        path or service root. This does not persist an icon.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IconDiscoverInput"
+      responses:
+        "200":
+          description: Discovered icon URI and browser-safe preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IconDiscovery"
+        "422":
+          $ref: "#/components/responses/Problem"
+  /system/status:
+    get:
+      operationId: getSystemStatus
+      responses:
+        "200":
+          description: DockFN runtime status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+  /system/diagnostics:
+    get:
+      operationId: getDiagnostics
+      responses:
+        "200":
+          description: Redacted log tails and diagnostic reports
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Diagnostics"
+    delete:
+      operationId: clearDiagnostics
+      description: >-
+        Truncates only DockFN server, helper, and lifecycle logs and removes the
+        latest DockFN discovery and install-failure reports.
+      responses:
+        "204":
+          description: DockFN diagnostic history cleared
+        "500":
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    fnOSSession:
+      type: apiKey
+      in: cookie
+      name: fnos_session
+      description: >-
+        Authentication is terminated by the fnOS gateway. DockFN accepts only
+        the trusted actor context supplied by that gateway.
+  parameters:
+    ApplicationID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-f0-9]{12}$"
+  responses:
+    Problem:
+      description: Request failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    ApplicationInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, protocol, port, path, allUsers]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          maxLength: 500
+          description: >-
+            Optional product description. When empty, DockFN keeps this field
+            empty but writes displayName into the generated fnOS manifest
+            because Application Center rejects an empty desc value.
+        entryPrefix:
+          type: string
+          maxLength: 27
+          pattern: "^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?$"
+          description: >-
+            Optional mutable launch ID request using 1 to 27 lowercase letters,
+            numbers, or internal hyphens and beginning with a letter. The
+            appname and desktop entry are <ID>.dkfn. Changing it performs a
+            verified replacement of the DockFN registration shell. When
+            omitted during creation, DockFN uses d followed by the immutable
+            12-character application ID. Any FN Connect hostname derived from
+            the entry remains fnOS-owned.
+        iconBase64:
+          type: string
+          description: PNG, JPEG or ICO data URL; mutually exclusive with iconUri.
+        iconUri:
+          type: string
+          description: >-
+            A path relative to the target service (for example /favicon.ico),
+            a host:port/path value, or an absolute file, HTTP or HTTPS URI.
+        origin:
+          $ref: "#/components/schemas/OriginSnapshot"
+        openType:
+          type: string
+          enum: [iframe, url]
+          default: url
+          description: fnOS launch mode. iframe opens inside the desktop frame; url opens as a URL entry.
+        protocol:
+          type: string
+          enum: [http, https]
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        path:
+          type: string
+          pattern: "^/"
+        allUsers:
+          type: boolean
+    OriginSnapshot:
+      type: object
+      additionalProperties: false
+      required: [source]
+      description: >-
+        Informational snapshot of the source selected during creation. DockFN
+        uses it only for display and search; it never grants process or
+        container control. Updates preserve the original snapshot.
+      properties:
+        source:
+          type: string
+          enum: [manual, docker, host]
+          default: manual
+        sourceDetail:
+          type: string
+          maxLength: 200
+          description: Container or host process name.
+        description:
+          type: string
+          maxLength: 500
+          description: Original image or discovery description.
+        networkMode:
+          type: string
+          maxLength: 200
+        pid:
+          type: integer
+          minimum: 1
+        watchCow:
+          type: boolean
+    IconPreviewInput:
+      type: object
+      additionalProperties: false
+      required: [iconUri, protocol, port]
+      properties:
+        iconUri:
+          type: string
+          minLength: 1
+        protocol:
+          type: string
+          enum: [http, https]
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+    IconPreview:
+      type: object
+      required: [dataUrl]
+      properties:
+        dataUrl:
+          type: string
+          pattern: "^data:image/png;base64,"
+    IconDiscoverInput:
+      type: object
+      additionalProperties: false
+      required: [protocol, port, path]
+      properties:
+        protocol:
+          type: string
+          enum: [http, https]
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        path:
+          type: string
+          minLength: 1
+          maxLength: 512
+          pattern: "^/"
+    IconDiscovery:
+      type: object
+      required: [iconUri, dataUrl]
+      properties:
+        iconUri:
+          type: string
+        dataUrl:
+          type: string
+          pattern: "^data:image/png;base64,"
+    ApplicationSpec:
+      allOf:
+        - $ref: "#/components/schemas/ApplicationInput"
+        - type: object
+          required: [id, appName, openType, revision]
+          properties:
+            id:
+              type: string
+              pattern: "^[a-f0-9]{12}$"
+            appName:
+              type: string
+              pattern: '^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?\.dkfn$'
+            iconPath:
+              type: string
+            revision:
+              type: integer
+              minimum: 1
+    ApplicationStatus:
+      type: object
+      required: [registration, target]
+      properties:
+        registration:
+          type: string
+          enum: [installed, missing, unknown]
+        target:
+          type: string
+          enum: [available, unavailable]
+        lastError:
+          type: string
+    ApplicationView:
+      allOf:
+        - $ref: "#/components/schemas/ApplicationSpec"
+        - type: object
+          required: [status]
+          properties:
+            status:
+              $ref: "#/components/schemas/ApplicationStatus"
+            iconDataUrl:
+              type: string
+    ApplicationList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApplicationView"
+    OperationResult:
+      type: object
+      required: [app, code]
+      properties:
+        app:
+          $ref: "#/components/schemas/ApplicationView"
+        code:
+          type: string
+          enum: [CREATED, UPDATED, REPAIRED, ROLLED_BACK]
+    DiscoveryCandidate:
+      type: object
+      required:
+        - key
+        - displayName
+        - protocol
+        - port
+        - path
+        - source
+        - preferred
+        - watchCow
+        - registrationSuggestion
+      properties:
+        key:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        protocol:
+          type: string
+          enum: [http, https]
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        path:
+          type: string
+        iconUri:
+          type: string
+          description: >-
+            Unverified icon hint from a WatchCow label or a same-origin
+            root-page link rel=icon. The discovery scan does not fetch it;
+            the authenticated form preview validates it after selection.
+        source:
+          type: string
+          enum: [docker, host]
+        sourceDetail:
+          type: string
+        address:
+          type: string
+        groupKey:
+          type: string
+        containerId:
+          type: string
+        networkMode:
+          type: string
+        ownerConfidence:
+          type: string
+          enum: [high, medium]
+        pid:
+          type: integer
+          minimum: 1
+        preferred:
+          type: boolean
+        watchCow:
+          type: boolean
+        existingApplication:
+          type: string
+        registrationSuggestion:
+          type: string
+          enum: [available, already-registered, existing-fnos-application]
+    DiscoveryList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiscoveryCandidate"
+    DiagnosticItem:
+      type: object
+      required: [name, text, present]
+      properties:
+        name:
+          type: string
+        text:
+          type: string
+        present:
+          type: boolean
+    Diagnostics:
+      type: object
+      required: [logs, reports]
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiagnosticItem"
+        reports:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiagnosticItem"
+    SystemStatus:
+      type: object
+      required: [product, version, architecture, applications, helperAvailable]
+      properties:
+        product:
+          type: string
+          enum: [DockFN]
+        version:
+          type: string
+        architecture:
+          type: string
+        applications:
+          type: integer
+          minimum: 0
+        helperAvailable:
+          type: boolean
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        suggestion:
+          type: string
+        requestId:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"

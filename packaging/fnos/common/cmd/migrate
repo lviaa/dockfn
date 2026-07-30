@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+# fnOS requires this lifecycle hook; it does not alter persisted application data.
+exit 0
