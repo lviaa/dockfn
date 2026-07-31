@@ -1,7 +1,7 @@
 appname=dockfn
 display_name=DockFN
 version={{VERSION}}
-desc=Register existing Web services as desktop entries.
+desc=将本机已有的 HTTP/HTTPS Web 服务创建为 fnOS 桌面入口，支持 Docker、宿主机和 WatchCow 服务发现、URL/iframe 打开及图标识别。DockFN 只管理入口壳，不会安装、启动、停止或删除目标服务、容器、卷和业务数据；创建前请确认服务端口可访问，卸载默认保留已创建入口。
 platform={{PLATFORM}}
 arch={{ARCH}}
 source=thirdparty
