@@ -15,8 +15,11 @@ import {
 
 type CreatorStep = 'discover' | 'review' | 'complete'
 type DiagnosticItem = Diagnostics['logs'][number]
-type DiscoverySourceFilter = 'all' | 'docker' | 'docker-host' | 'host'
+type DiscoverySourceGroup = 'docker' | 'docker-host' | 'host' | 'ignored'
 type IconDiscoveryStatus = '' | 'loading' | 'found' | 'missing'
+
+const ignoredCandidatesStorageKey = 'dockfn.discovery.ignored.v1'
+const maxPersistedIgnoredCandidates = 500
 
 const commonCandidateIconURIs = [
   '/favicon.ico',
@@ -34,7 +37,6 @@ const loading = ref(true)
 const scanning = ref(false)
 const scanCompleted = ref(false)
 const busy = ref('')
-const notice = ref('')
 const error = ref('')
 const search = ref('')
 const creatorOpen = ref(false)
@@ -43,8 +45,9 @@ const selectedDiagnostic = ref<DiagnosticItem | null>(null)
 const diagnosticNotice = ref('')
 const pendingDiagnosticsClear = ref(false)
 const creatorStep = ref<CreatorStep>('discover')
-const discoverySourceFilter = ref<DiscoverySourceFilter>('all')
+const collapsedDiscoveryGroups = ref<Set<string>>(new Set(['ignored']))
 const hideInstalledCandidates = ref(true)
+const ignoredCandidateKeys = ref<Set<string>>(readIgnoredCandidateKeys())
 const editing = ref<AppView | null>(null)
 const completedApp = ref<AppView | null>(null)
 const selectedCandidate = ref<DiscoveryCandidate | null>(null)
@@ -56,6 +59,52 @@ const iconDiscoveryStatus = ref<IconDiscoveryStatus>('')
 let iconPreviewSequence = 0
 let discoverySequence = 0
 let pathIconTimer: ReturnType<typeof setTimeout> | undefined
+
+function readIgnoredCandidateKeys() {
+  if (typeof window === 'undefined') return new Set<string>()
+  try {
+    const raw = window.localStorage.getItem(ignoredCandidatesStorageKey)
+    if (!raw) return new Set<string>()
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return new Set<string>()
+    return new Set(
+      parsed.filter(
+        (value): value is string =>
+          typeof value === 'string' && value.length > 0 && value.length <= 512,
+      ),
+    )
+  } catch {
+    return new Set<string>()
+  }
+}
+
+function persistIgnoredCandidateKeys(keys: Set<string>) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      ignoredCandidatesStorageKey,
+      JSON.stringify(Array.from(keys).slice(-maxPersistedIgnoredCandidates)),
+    )
+  } catch {
+    // Private browsing or a full storage quota should not disable discovery.
+  }
+}
+
+function syncIgnoredCandidateKeys(keys: Set<string>) {
+  return request('/discovery/ignored', {
+    method: 'PUT',
+    body: JSON.stringify({ keys: Array.from(keys) }),
+  })
+}
+
+function setIgnoredCandidateKeys(keys: Set<string>) {
+  ignoredCandidateKeys.value = keys
+  persistIgnoredCandidateKeys(keys)
+  void syncIgnoredCandidateKeys(keys).catch(() => {
+    // Keep the browser copy as a compatibility fallback when an older shell
+    // is still serving the page during an upgrade.
+  })
+}
 
 const form = reactive<AppInput>({
   displayName: '',
@@ -85,53 +134,32 @@ const filteredApps = computed(() => {
   )
 })
 
-const discoverySourceOptions = computed(() => {
-  const options: Array<{ key: DiscoverySourceFilter; label: string }> = [
-    { key: 'all', label: '全部' },
-    { key: 'docker', label: 'Docker' },
-    { key: 'docker-host', label: 'Docker Host' },
-    { key: 'host', label: '宿主机' },
-  ]
-  return options
-    .map((option) => ({
-      ...option,
-      count:
-        option.key === 'all'
-          ? candidates.value.length
-          : candidates.value.filter((candidate) => candidateSourceGroup(candidate) === option.key)
-              .length,
-    }))
-    .filter((option) => option.key === 'all' || option.count > 0)
-})
-
 const installedCandidateCount = computed(
   () =>
     candidates.value.filter((candidate) => candidate.registrationSuggestion !== 'available').length,
 )
 
 const visibleCandidates = computed(() =>
-  candidates.value.filter((candidate) => {
-    if (
-      discoverySourceFilter.value !== 'all' &&
-      candidateSourceGroup(candidate) !== discoverySourceFilter.value
-    ) {
-      return false
-    }
-    return !(hideInstalledCandidates.value && candidate.registrationSuggestion !== 'available')
-  }),
+  candidates.value.filter(
+    (candidate) =>
+      !ignoredCandidateKeys.value.has(candidate.key) &&
+      !(hideInstalledCandidates.value && candidate.registrationSuggestion !== 'available'),
+  ),
 )
 
 const groupedCandidates = computed(() => {
-  const sourceOrder: Exclude<DiscoverySourceFilter, 'all'>[] = ['docker', 'docker-host', 'host']
-  const sourceLabels: Record<Exclude<DiscoverySourceFilter, 'all'>, string> = {
+  const sourceOrder: DiscoverySourceGroup[] = ['docker', 'docker-host', 'host', 'ignored']
+  const sourceLabels: Record<DiscoverySourceGroup, string> = {
     docker: 'Docker',
     'docker-host': 'Docker Host',
     host: '宿主机',
+    ignored: '已忽略',
   }
   return sourceOrder.flatMap((source) => {
-    const sourceItems = visibleCandidates.value.filter(
-      (candidate) => candidateSourceGroup(candidate) === source,
-    )
+    const sourceItems =
+      source === 'ignored'
+        ? candidates.value.filter((candidate) => ignoredCandidateKeys.value.has(candidate.key))
+        : visibleCandidates.value.filter((candidate) => candidateSourceGroup(candidate) === source)
     if (!sourceItems.length) return []
     const groups = new Map<string, DiscoveryCandidate[]>()
     for (const candidate of sourceItems) {
@@ -146,6 +174,7 @@ const groupedCandidates = computed(() => {
         key: source,
         label: sourceLabels[source],
         portCount: sourceItems.length,
+        collapsed: collapsedDiscoveryGroups.value.has(source),
         groups: Array.from(groups, ([key, items]) => ({
           key,
           tags: sourceTags(items[0]),
@@ -162,6 +191,17 @@ const groupedCandidates = computed(() => {
 const diagnosticItems = computed(() =>
   diagnostics.value ? [...diagnostics.value.logs, ...(diagnostics.value.reports || [])] : [],
 )
+
+function diagnosticDescription(name: string) {
+  const descriptions: Record<string, string> = {
+    'server.log': '管理服务运行日志',
+    'helper.log': '权限助手与 fnOS 操作日志',
+    'lifecycle.log': '应用生命周期日志',
+    'last-discovery.json': '最近一次服务扫描快照',
+    'last-install-failure.json': '最近一次安装失败诊断',
+  }
+  return descriptions[name] || 'DockFN 诊断记录'
+}
 
 const entryPrefixValid = computed(() => {
   const prefix = normalizedEntryPrefix(form.entryPrefix)
@@ -223,8 +263,8 @@ function beginCreate() {
   completedApp.value = null
   selectedCandidate.value = null
   candidates.value = []
-  discoverySourceFilter.value = 'all'
-  hideInstalledCandidates.value = true
+  ignoredCandidateKeys.value = readIgnoredCandidateKeys()
+  collapsedDiscoveryGroups.value = new Set(['ignored'])
   scanCompleted.value = false
   creatorStep.value = 'discover'
   resetForm()
@@ -271,12 +311,23 @@ async function scanServices() {
   scanning.value = true
   error.value = ''
   try {
-    const response = await request<{ items: DiscoveryCandidate[] }>('/discovery/scan', {
+    const response = await request<{
+      items: DiscoveryCandidate[]
+      ignoredKeys?: string[]
+    }>('/discovery/scan', {
       method: 'POST',
     })
     if (sequence !== discoverySequence) return
     candidates.value = response.items
-    if (response.items.length === 0) notice.value = '未发现可访问的本地 Web 服务；你仍可手动填写。'
+    if (Array.isArray(response.ignoredKeys)) {
+      const serverKeys = new Set(response.ignoredKeys)
+      const localKeys = readIgnoredCandidateKeys()
+      ignoredCandidateKeys.value = serverKeys.size ? serverKeys : localKeys
+      persistIgnoredCandidateKeys(ignoredCandidateKeys.value)
+      if (!serverKeys.size && localKeys.size) {
+        void syncIgnoredCandidateKeys(localKeys).catch(() => undefined)
+      }
+    }
   } catch (reason) {
     if (sequence === discoverySequence) showError(reason)
   } finally {
@@ -435,9 +486,9 @@ async function selectIcon(event: Event) {
   ].includes(file.type)
   if (
     (!supportedType && !file.name.toLocaleLowerCase('en-US').endsWith('.ico')) ||
-    file.size > 512 * 1024
+    file.size > 2 * 1024 * 1024
   ) {
-    error.value = '图标必须是 512 KiB 以内的 PNG、JPEG 或 ICO。'
+    error.value = '图标必须是 2 MiB 以内的 PNG、JPEG 或 ICO。'
     input.value = ''
     return
   }
@@ -520,7 +571,6 @@ async function submit() {
     })
     replaceApp(response.app)
     if (editing.value) {
-      notice.value = '应用入口已更新。'
       creatorOpen.value = false
     } else {
       completedApp.value = response.app
@@ -540,13 +590,11 @@ async function runAction(item: AppView, action: 'check' | 'repair' | 'rollback')
   try {
     if (action === 'check') {
       replaceApp(await request<AppView>(`/apps/${item.id}/check`, { method: 'POST' }))
-      notice.value = '登记壳和目标端口检测已完成。'
     } else {
       const response = await request<OperationResult>(`/apps/${item.id}/${action}`, {
         method: 'POST',
       })
       replaceApp(response.app)
-      notice.value = action === 'repair' ? '登记壳已重新安装。' : '已回退到上一次成功配置。'
     }
   } catch (reason) {
     showError(reason)
@@ -564,7 +612,6 @@ async function removeConfirmed() {
     await request<void>(`/apps/${item.id}`, { method: 'DELETE' })
     apps.value = apps.value.filter((candidate) => candidate.id !== item.id)
     pendingRemoval.value = null
-    notice.value = 'fnOS 应用入口已移除；目标服务和数据未受影响。'
   } catch (reason) {
     showError(reason)
   } finally {
@@ -655,14 +702,34 @@ function sourceTags(candidate: DiscoveryCandidate) {
 
 function candidateSourceGroup(
   candidate: Pick<DiscoveryCandidate, 'source' | 'networkMode'>,
-): Exclude<DiscoverySourceFilter, 'all'> {
+): Exclude<DiscoverySourceGroup, 'ignored'> {
   if (candidate.source === 'host') return 'host'
   return candidate.networkMode === 'host' ? 'docker-host' : 'docker'
 }
 
-function clearDiscoveryFilters() {
-  discoverySourceFilter.value = 'all'
+function showAllDiscoveryCandidates() {
+  collapsedDiscoveryGroups.value = new Set()
   hideInstalledCandidates.value = false
+}
+
+function toggleDiscoveryGroup(key: string) {
+  const next = new Set(collapsedDiscoveryGroups.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedDiscoveryGroups.value = next
+}
+
+function ignoreCandidate(candidate: DiscoveryCandidate) {
+  const next = new Set(ignoredCandidateKeys.value)
+  next.add(candidate.key)
+  setIgnoredCandidateKeys(next)
+  collapsedDiscoveryGroups.value = new Set(collapsedDiscoveryGroups.value).add('ignored')
+}
+
+function restoreCandidate(candidate: DiscoveryCandidate) {
+  const next = new Set(ignoredCandidateKeys.value)
+  next.delete(candidate.key)
+  setIgnoredCandidateKeys(next)
 }
 
 function originSourceTag(origin: Pick<AppOrigin, 'source' | 'networkMode'>) {
@@ -730,7 +797,7 @@ onBeforeUnmount(clearPathIconTimer)
         <div class="brand-block">
           <img class="brand-mark" :src="dockfnLogo" alt="DockFN" />
           <div>
-            <div class="brand-line"><strong>DockFN</strong><span>飞牛应用坞</span></div>
+            <div class="brand-line"><strong>DockFN</strong></div>
             <p>把已有 Web 服务接入 fnOS 桌面</p>
           </div>
         </div>
@@ -749,7 +816,6 @@ onBeforeUnmount(clearPathIconTimer)
       <main class="workspace" aria-labelledby="application-heading">
         <div class="workspace-head">
           <div>
-            <p class="eyebrow">REGISTERED APPLICATIONS</p>
             <h1 id="application-heading">
               已注册应用 <span>{{ apps.length }}</span>
             </h1>
@@ -760,13 +826,6 @@ onBeforeUnmount(clearPathIconTimer)
           </label>
         </div>
 
-        <div v-if="notice" class="message success" role="status">
-          <Icon icon="solar:check-circle-linear" aria-hidden="true" />
-          <span>{{ notice }}</span>
-          <button type="button" aria-label="关闭提示" @click="notice = ''">
-            <Icon icon="solar:close-circle-linear" />
-          </button>
-        </div>
         <div v-if="error" class="message error" role="alert">
           <Icon icon="solar:danger-triangle-linear" aria-hidden="true" />
           <span>{{ error }}</span>
@@ -822,9 +881,11 @@ onBeforeUnmount(clearPathIconTimer)
               </div>
             </div>
             <div class="endpoint">
-              <span>{{ item.protocol.toUpperCase() }} · {{ item.openType.toUpperCase() }}</span>
-              <strong>{{ item.port }}</strong>
-              <small>{{ item.path }}</small>
+              <span class="endpoint-type"
+                >{{ item.protocol.toUpperCase() }} · {{ item.openType.toUpperCase() }}</span
+              >
+              <strong class="endpoint-port">{{ item.port }}</strong>
+              <small class="endpoint-path">{{ item.path }}</small>
             </div>
             <div class="statuses">
               <Icon
@@ -985,117 +1046,152 @@ onBeforeUnmount(clearPathIconTimer)
               </div>
             </div>
             <div v-if="candidates.length" class="discovery-results">
-              <section class="discovery-filters" aria-label="发现结果筛选">
-                <div class="discovery-filter-line">
-                  <span class="discovery-filter-label">服务类型</span>
-                  <div class="discovery-filter-options">
-                    <button
-                      v-for="option in discoverySourceOptions"
-                      :key="option.key"
-                      class="filter-chip"
-                      :class="{ active: discoverySourceFilter === option.key }"
-                      type="button"
-                      :aria-pressed="discoverySourceFilter === option.key"
-                      :data-filter-source="option.key"
-                      @click="discoverySourceFilter = option.key"
-                    >
-                      {{ option.label }}<small>{{ option.count }}</small>
-                    </button>
-                  </div>
-                  <label class="installed-filter" :class="{ active: hideInstalledCandidates }">
-                    <input v-model="hideInstalledCandidates" type="checkbox" />
-                    <span>隐藏已安装</span><small>{{ installedCandidateCount }}</small>
-                  </label>
-                  <span class="discovery-result-count">
-                    显示 {{ visibleCandidates.length }} / {{ candidates.length }}
-                  </span>
+              <div class="discovery-toolbar">
+                <div class="discovery-result-count">
+                  共 {{ candidates.length }} 个 Web 端口，按服务来源分组
                 </div>
-              </section>
+                <label class="installed-filter" :class="{ active: hideInstalledCandidates }">
+                  <input v-model="hideInstalledCandidates" type="checkbox" />
+                  <span>隐藏已注册</span><small>{{ installedCandidateCount }}</small>
+                </label>
+              </div>
               <div v-if="groupedCandidates.length" class="candidate-list">
                 <section
                   v-for="sourceGroup in groupedCandidates"
                   :key="sourceGroup.key"
                   class="candidate-source-group"
+                  :class="{
+                    collapsed: sourceGroup.collapsed,
+                    ignored: sourceGroup.key === 'ignored',
+                  }"
                 >
-                  <header class="candidate-source-heading">
+                  <button
+                    class="candidate-source-heading"
+                    type="button"
+                    :aria-expanded="!sourceGroup.collapsed"
+                    @click="toggleDiscoveryGroup(sourceGroup.key)"
+                  >
                     <span class="candidate-source" :class="sourceGroup.key">{{
                       sourceGroup.label
                     }}</span>
-                    <span
+                    <span class="candidate-source-summary"
                       >{{ sourceGroup.groups.length }} 个服务 ·
                       {{ sourceGroup.portCount }} 个端口</span
                     >
-                  </header>
-                  <section
-                    v-for="group in sourceGroup.groups"
-                    :key="group.key"
-                    class="candidate-group"
-                  >
-                    <header>
-                      <div class="candidate-group-tags">
-                        <span
-                          v-for="(tag, index) in group.tags"
-                          :key="tag"
-                          class="candidate-group-tag"
-                          :class="{ primary: index === 0 }"
-                          >{{ tag }}</span
-                        >
-                      </div>
-                      <span class="candidate-group-count"
-                        >{{ group.items.length }} 个 Web 端口</span
-                      >
-                    </header>
-                    <button
-                      v-for="candidate in group.items"
-                      :key="candidate.key"
-                      class="candidate-card"
-                      type="button"
-                      :disabled="candidate.registrationSuggestion !== 'available'"
-                      :title="
-                        candidate.registrationSuggestion === 'available'
-                          ? '选择此 Web 服务'
-                          : suggestionLabel(candidate)
+                    <Icon
+                      :icon="
+                        sourceGroup.collapsed
+                          ? 'solar:alt-arrow-down-linear'
+                          : 'solar:alt-arrow-up-linear'
                       "
-                      @click="selectCandidate(candidate)"
+                      aria-hidden="true"
+                    />
+                  </button>
+                  <div v-if="!sourceGroup.collapsed" class="candidate-source-body">
+                    <section
+                      v-for="group in sourceGroup.groups"
+                      :key="group.key"
+                      class="candidate-group"
                     >
-                      <span class="candidate-main"
-                        ><strong
-                          >{{ candidate.displayName
-                          }}<em v-if="candidate.preferred">WatchCow 主入口</em></strong
-                        ><small
-                          >{{ candidate.protocol.toUpperCase() }}://{{
-                            endpointAddress(candidate)
-                          }}:{{ candidate.port }}{{ candidate.path }}</small
-                        ></span
+                      <header>
+                        <div class="candidate-group-tags">
+                          <span
+                            v-for="(tag, index) in group.tags"
+                            :key="tag"
+                            class="candidate-group-tag"
+                            :class="{ primary: index === 0 }"
+                            >{{ tag }}</span
+                          >
+                        </div>
+                        <span class="candidate-group-count"
+                          >{{ group.items.length }} 个 Web 端口</span
+                        >
+                      </header>
+                      <div
+                        v-for="candidate in group.items"
+                        :key="candidate.key"
+                        class="candidate-row"
                       >
-                      <span class="candidate-meta"
-                        ><small>{{
-                          candidate.ownerConfidence ? `归属：${candidate.ownerConfidence}` : ''
-                        }}</small
-                        ><em :class="candidate.registrationSuggestion">{{
-                          suggestionLabel(candidate)
-                        }}</em></span
-                      >
-                      <Icon
-                        :icon="
-                          candidate.registrationSuggestion === 'available'
-                            ? 'solar:alt-arrow-right-linear'
-                            : 'solar:forbidden-circle-linear'
-                        "
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </section>
+                        <button
+                          class="candidate-card"
+                          type="button"
+                          :disabled="
+                            sourceGroup.key === 'ignored' ||
+                            candidate.registrationSuggestion !== 'available'
+                          "
+                          :title="
+                            sourceGroup.key === 'ignored'
+                              ? '该服务已忽略'
+                              : candidate.registrationSuggestion === 'available'
+                                ? '选择此 Web 服务'
+                                : suggestionLabel(candidate)
+                          "
+                          @click="selectCandidate(candidate)"
+                        >
+                          <span class="candidate-main"
+                            ><strong
+                              >{{ candidate.displayName
+                              }}<em v-if="candidate.preferred">WatchCow 主入口</em></strong
+                            ><small
+                              >{{ candidate.protocol.toUpperCase() }}://{{
+                                endpointAddress(candidate)
+                              }}:{{ candidate.port }}{{ candidate.path }}</small
+                            ></span
+                          >
+                          <span class="candidate-meta"
+                            ><small>{{
+                              candidate.ownerConfidence ? `归属：${candidate.ownerConfidence}` : ''
+                            }}</small
+                            ><em :class="candidate.registrationSuggestion">{{
+                              suggestionLabel(candidate)
+                            }}</em></span
+                          >
+                          <Icon
+                            :icon="
+                              sourceGroup.key !== 'ignored' &&
+                              candidate.registrationSuggestion === 'available'
+                                ? 'solar:alt-arrow-right-linear'
+                                : 'solar:forbidden-circle-linear'
+                            "
+                            aria-hidden="true"
+                          />
+                        </button>
+                        <button
+                          class="candidate-ignore"
+                          type="button"
+                          :aria-label="
+                            sourceGroup.key === 'ignored'
+                              ? `恢复 ${candidate.displayName}`
+                              : `忽略 ${candidate.displayName}`
+                          "
+                          @click="
+                            sourceGroup.key === 'ignored'
+                              ? restoreCandidate(candidate)
+                              : ignoreCandidate(candidate)
+                          "
+                        >
+                          <Icon
+                            :icon="
+                              sourceGroup.key === 'ignored'
+                                ? 'solar:undo-left-round-linear'
+                                : 'solar:eye-closed-linear'
+                            "
+                            aria-hidden="true"
+                          />{{ sourceGroup.key === 'ignored' ? '恢复' : '忽略' }}
+                        </button>
+                      </div>
+                    </section>
+                  </div>
                 </section>
               </div>
               <div v-else class="filtered-empty">
-                <Icon icon="solar:filter-linear" aria-hidden="true" />
+                <Icon icon="solar:eye-closed-linear" aria-hidden="true" />
                 <span
-                  ><strong>没有符合当前筛选的服务</strong
-                  ><small>可调整服务类型或显示已安装项目。</small></span
+                  ><strong>当前没有显示中的服务</strong
+                  ><small>已忽略的服务仍保留在“已忽略”分组中。</small></span
                 >
-                <button class="secondary-button" type="button" @click="clearDiscoveryFilters">
-                  显示全部
+                <button class="secondary-button" type="button" @click="showAllDiscoveryCandidates">
+                  展开全部
                 </button>
               </div>
             </div>
@@ -1201,6 +1297,7 @@ onBeforeUnmount(clearPathIconTimer)
               </div>
               <div class="icon-source-controls">
                 <span class="field-title">应用图标</span>
+                <small class="icon-cache-help">如果桌面图标未更新，请清除缓存后重新刷新。</small>
                 <button
                   class="icon-discover-button"
                   type="button"
@@ -1381,35 +1478,26 @@ onBeforeUnmount(clearPathIconTimer)
             <Icon class="loader" icon="solar:refresh-linear" />正在读取诊断信息…
           </div>
           <div v-else class="diagnostic-logs">
-            <article v-for="log in diagnosticItems" :key="log.name">
-              <header class="diagnostic-card-head">
-                <h3>
-                  <Icon
-                    :icon="log.present ? 'solar:document-text-linear' : 'solar:file-remove-linear'"
-                  />{{ log.name }}
-                </h3>
+            <article v-for="log in diagnosticItems" :key="log.name" class="diagnostic-row">
+              <div class="diagnostic-file">
+                <Icon
+                  :icon="log.present ? 'solar:document-text-linear' : 'solar:file-remove-linear'"
+                  aria-hidden="true"
+                />
                 <div>
-                  <button
-                    class="log-action"
-                    type="button"
-                    :disabled="!log.present"
-                    :aria-label="`独立查看 ${log.name}`"
-                    @click="openDiagnostic(log)"
-                  >
-                    <Icon icon="solar:maximize-square-3-linear" />独立查看
-                  </button>
-                  <button
-                    class="log-action"
-                    type="button"
-                    :disabled="!log.present"
-                    :aria-label="`复制 ${log.name}`"
-                    @click="copyDiagnostic(log)"
-                  >
-                    <Icon icon="solar:copy-linear" />复制
-                  </button>
+                  <strong>{{ log.name }}</strong>
+                  <small>{{ diagnosticDescription(log.name) }}</small>
                 </div>
-              </header>
-              <pre>{{ log.present ? log.text || '日志文件为空。' : '尚未生成该日志文件。' }}</pre>
+              </div>
+              <button
+                class="log-action"
+                type="button"
+                :disabled="!log.present"
+                :aria-label="`查看 ${log.name}`"
+                @click="openDiagnostic(log)"
+              >
+                <Icon icon="solar:maximize-square-3-linear" />查看
+              </button>
             </article>
           </div>
         </section>

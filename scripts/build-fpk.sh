@@ -3,7 +3,8 @@ set -eu
 
 version="${1:?version required}"
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-out="$root/dist/fpk"
+build_root="${DOCKFN_BUILD_ROOT:-$root/dist}"
+out="${DOCKFN_FPK_OUT:-$root/dist/fpk}"
 rm -rf "$out"
 mkdir -p "$out"
 
@@ -21,7 +22,7 @@ for arch in amd64 arm64; do
       ;;
   esac
 
-  work="$root/dist/.fpk-native-$arch"
+  work="$build_root/.fpk-$arch"
   rm -rf "$work"
   mkdir -p "$work/app/target" "$work/app/ui/images" "$work/cmd" "$work/config" "$work/wizard"
   sed \
@@ -32,21 +33,21 @@ for arch in amd64 arm64; do
   for script in main migrate install_init install_callback upgrade_init upgrade_callback uninstall_init uninstall_callback config_init config_callback preflight; do
     cp "$root/packaging/fnos/common/cmd/$script" "$work/cmd/$script"
   done
+  cp "$root/packaging/fnos/common/wizard/install" "$work/wizard/install"
   cp "$root/packaging/fnos/common/wizard/uninstall" "$work/wizard/uninstall"
   cp "$root/packaging/fnos/common/app/ui/config" "$work/app/ui/config"
   cp "$root/assets/ICON.PNG" "$work/ICON.PNG"
   cp "$root/assets/ICON_256.PNG" "$work/ICON_256.PNG"
   cp "$root/assets/ICON.PNG" "$work/app/ui/images/icon_64.png"
   cp "$root/assets/ICON_256.PNG" "$work/app/ui/images/icon_256.png"
-  cp "$root/LICENSE" "$work/LICENSE"
   cp "$root/packaging/fnos/native/resource" "$work/config/resource"
   cp "$root/packaging/fnos/native/privilege" "$work/config/privilege"
   cp "$root/bin/dockfn-linux-$arch" "$work/app/target/dockfn"
   chmod 755 "$work"/cmd/* "$work/app/target/dockfn"
 
-  output="$out/dockfn-native-$artifact_arch.fpk"
+  output="$out/dockfn-$version-$artifact_arch.fpk"
   if command -v fnpack >/dev/null 2>&1; then
-    fnpack_out="$root/dist/.fnpack-native-$arch"
+    fnpack_out="$build_root/.fnpack-$arch"
     rm -rf "$fnpack_out"
     mkdir -p "$fnpack_out"
     (cd "$fnpack_out" && fnpack build -d "$work")
@@ -58,14 +59,14 @@ for arch in amd64 arm64; do
     mv "$built" "$output"
     rm -rf "$fnpack_out"
   else
-    package_dir="$root/dist/.package-native-$arch"
-    app_dir="$root/dist/.app-native-$arch"
+    package_dir="$build_root/.package-$arch"
+    app_dir="$build_root/.app-$arch"
     rm -rf "$package_dir" "$app_dir"
     mkdir -p "$package_dir" "$app_dir"
     cp -R "$work/app/." "$app_dir/"
     cp -R "$work/config" "$app_dir/config"
     tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 -czf "$package_dir/app.tgz" -C "$app_dir" .
-    cp "$work/manifest" "$work/ICON.PNG" "$work/ICON_256.PNG" "$work/LICENSE" "$package_dir/"
+    cp "$work/manifest" "$work/ICON.PNG" "$work/ICON_256.PNG" "$package_dir/"
     cp -R "$work/cmd" "$work/config" "$work/wizard" "$package_dir/"
     tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 -czf "$output" -C "$package_dir" .
     rm -rf "$package_dir" "$app_dir"
@@ -73,7 +74,7 @@ for arch in amd64 arm64; do
 done
 
 rm -rf \
-  "$root/dist/.fpk-native-amd64" "$root/dist/.fpk-native-arm64" \
-  "$root/dist/.fnpack-native-amd64" "$root/dist/.fnpack-native-arm64" \
-  "$root/dist/.package-native-amd64" "$root/dist/.package-native-arm64" \
-  "$root/dist/.app-native-amd64" "$root/dist/.app-native-arm64"
+  "$build_root/.fpk-amd64" "$build_root/.fpk-arm64" \
+  "$build_root/.fnpack-amd64" "$build_root/.fnpack-arm64" \
+  "$build_root/.package-amd64" "$build_root/.package-arm64" \
+  "$build_root/.app-amd64" "$build_root/.app-arm64"

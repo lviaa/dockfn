@@ -143,6 +143,35 @@ paths:
                 $ref: "#/components/schemas/DiscoveryList"
         "503":
           $ref: "#/components/responses/Problem"
+  /discovery/ignored:
+    get:
+      operationId: listIgnoredDiscoveryCandidates
+      description: Returns the administrator's locally persisted discovery ignore list.
+      responses:
+        "200":
+          description: Persisted ignored candidate keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IgnoredCandidateList"
+    put:
+      operationId: replaceIgnoredDiscoveryCandidates
+      description: Replaces the locally persisted discovery ignore list.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IgnoredCandidateInput"
+      responses:
+        "200":
+          description: Persisted ignored candidate keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IgnoredCandidateList"
+        "422":
+          $ref: "#/components/responses/Problem"
   /icons/preview:
     post:
       operationId: previewApplicationIcon
@@ -275,8 +304,10 @@ components:
         iconUri:
           type: string
           description: >-
-            A path relative to the target service (for example /favicon.ico),
+            A path relative to the target service (for example /favicon.png),
             a host:port/path value, or an absolute file, HTTP or HTTPS URI.
+            PNG, JPEG and ICO payloads up to 2 MiB are resized automatically;
+            SVG paths are reported as hints and must be converted before upload.
         origin:
           $ref: "#/components/schemas/OriginSnapshot"
         openType:
@@ -493,12 +524,42 @@ components:
           enum: [available, already-registered, existing-fnos-application]
     DiscoveryList:
       type: object
-      required: [items]
+      required: [items, ignoredKeys]
       properties:
         items:
           type: array
           items:
             $ref: "#/components/schemas/DiscoveryCandidate"
+        ignoredKeys:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+    IgnoredCandidateInput:
+      type: object
+      additionalProperties: false
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+    IgnoredCandidateList:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
     DiagnosticItem:
       type: object
       required: [name, text, present]

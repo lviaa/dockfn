@@ -72,6 +72,10 @@ func httpFixture(t *testing.T) (http.Handler, *config.FileStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	discoveryStore, err := config.OpenDiscoveryStore(data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	service := &app.Service{
 		Repo: repository, Builder: httpBuilder{staging: staging},
 		Platform:   &httpPlatform{installed: map[string]bool{}},
@@ -81,10 +85,30 @@ func httpFixture(t *testing.T) (http.Handler, *config.FileStore) {
 		NewID: func() (string, error) { return "012345abcdef", nil },
 	}
 	server := &Server{
-		Apps: service, Version: "test", HelperAvailable: func() bool { return true },
+		Apps: service, Discovery: discoveryStore, Version: "test", HelperAvailable: func() bool { return true },
 		ClearDiagnostics: func(context.Context) error { return nil },
 	}
 	return server.Handler(), repository
+}
+
+func TestDiscoveryIgnoredKeysPersistThroughAPI(t *testing.T) {
+	handler, _ := httpFixture(t)
+	response := adminRequest(handler, http.MethodPut, "/api/discovery/ignored", []byte(`{"keys":[""]}`))
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid ignored status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = adminRequest(handler, http.MethodPut, "/api/discovery/ignored", []byte(`{"keys":["docker:demo:8080"]}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("replace ignored status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = adminRequest(handler, http.MethodGet, "/api/discovery/ignored", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "docker:demo:8080") {
+		t.Fatalf("list ignored status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = adminRequest(handler, http.MethodPost, "/api/discovery/scan", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "ignoredKeys") {
+		t.Fatalf("scan ignored status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func adminRequest(handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {

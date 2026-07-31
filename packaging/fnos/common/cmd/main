@@ -16,6 +16,25 @@ package_user="${TRIM_USERNAME:-dockfn}"
 package_group="${TRIM_GROUPNAME:-$package_user}"
 daemon=/usr/sbin/start-stop-daemon
 
+# The install wizard explicitly selects the volume used by generated entry
+# shells. Keep that choice in package config so later restarts and upgrades do
+# not depend on the mutable Application Center default volume.
+install_volume_file="${TRIM_PKGVAR}/config/install-volume"
+if [ -r "$install_volume_file" ]; then
+  install_volume="$(sed -n '1p' "$install_volume_file")"
+else
+  install_volume="${wizard_install_volume:-${TRIM_APPDEST_VOL:-}}"
+fi
+case "$install_volume" in
+  /vol*) install_volume="${install_volume#/vol}" ;;
+esac
+case "$install_volume" in
+  ''|*[!0-9]*)
+    echo "DockFN 无法识别当前应用的安装存储空间。" >>"$log"
+    exit 1
+    ;;
+esac
+
 mkdir -p "$run_dir" "$data_dir" "$staging_dir" "$log_dir"
 
 [ "$(id -u)" -eq 0 ] || {
@@ -56,6 +75,7 @@ start_helper() {
     DOCKFN_STAGING_DIR="$staging_dir" \
     DOCKFN_HELPER_SOCKET="$helper_socket" \
     DOCKFN_HELPER_GID="$package_gid" \
+    DOCKFN_INSTALL_VOLUME="$install_volume" \
     "$daemon" -S -b -m -p "$helper_pid" -c "0:$package_gid" -x "$binary" \
       -O "${log_dir}/helper.log" -- helper
   attempts=0

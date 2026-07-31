@@ -1,4 +1,4 @@
-# DockFN · 飞牛应用坞
+# DockFN
 
 <p align="center">
   <img src="assets/ICON_256.PNG" width="128" alt="DockFN logo">
@@ -29,6 +29,7 @@ DockFN 适合已经在 fnOS 主机固定端口提供访问、只需要补充桌�
 ## 使用边界
 
 - 正式部署方式为 fnOS 原生 FPK，支持 x86_64 和 ARM64 构建。
+- 安装向导会主动配置后续入口壳的存储分区（例如填写 `1` 表示 `/vol1`）；不存在的分区编号会回退到 `/vol1`。该位置在安装后固定，不会自动迁移，也不会改变目标服务的数据位置。
 - 一个 DockFN 应用对应一个固定宿主机端口和一个 fnOS 桌面入口。
 - 服务发现必须由管理员手动触发，发现结果不会自动创建应用。
 - DockFN 不提供反向代理、中继、公共 URL、DNS、证书或 Docker 生命周期管理。
@@ -39,8 +40,8 @@ DockFN 适合已经在 fnOS 主机固定端口提供访问、只需要补充桌�
 从 GitHub Release 下载与设备架构对应的文件，然后在 fnOS 应用中心手工安装：
 
 ```text
-dockfn-native-x86_64.fpk
-dockfn-native-arm64.fpk
+dockfn-<version>-x86_64.fpk
+dockfn-<version>-arm64.fpk
 ```
 
 首次打开需要使用 fnOS 管理员账户。目标 Web 服务必须已经通过固定宿主机端口提供访问。
@@ -53,7 +54,7 @@ dockfn-native-arm64.fpk
 
 ## 构建与验证
 
-需要 Go 1.26、Node.js 24、npm、GNU Make 和 POSIX shell：
+标准 Make 流程需要 Go 1.26、Node.js 24、npm、GNU Make 和 POSIX shell：
 
 ```sh
 make verify
@@ -63,10 +64,19 @@ make fpk
 `make verify` 执行格式检查、静态检查、依赖审计、前后端测试和竞态测试。`make fpk` 默认读取根目录 [VERSION](VERSION) 中的版本号，执行前端构建、双架构交叉编译、FPK 构建、校验和及产物检查；需要复现其他版本时仍可用 `VERSION=x.y.z` 覆盖。构建输出位于：
 
 ```text
-dist/fpk/dockfn-native-x86_64.fpk
-dist/fpk/dockfn-native-arm64.fpk
+dist/fpk/dockfn-<version>-x86_64.fpk
+dist/fpk/dockfn-<version>-arm64.fpk
 dist/SHA256SUMS
 ```
+
+Windows 用户可双击根目录的 `build-fpk.cmd` 一键打包。脚本读取 [VERSION](VERSION)，自动执行前端构建、Windows 辅助程序编译、Linux x86_64/arm64 交叉编译、FPK 打包、校验和生成和产物检查；需要覆盖版本时可执行 `build-fpk.cmd -Version 0.1.1`。该入口需要 Go 1.26、Node.js 24、npm，以及 Git Bash 或 WSL 提供的 `bash`。若 `dist/fpk` 被旧的 WSL 文件锁定或不可写，会自动输出到 `dist/fpk-<version>`；如果整个 `dist` 目录不可写，需要先关闭占用它的 WSL 进程或修复目录权限。
+
+构建入口分工如下：
+
+- `make verify`：只执行完整自动化测试和静态检查，不生成 FPK。
+- `make fpk`：执行标准 FPK 构建、校验和及产物检查。
+- `scripts/build-fpk.sh`：底层 POSIX 打包脚本，供 Make、CI 和 Windows 入口复用。
+- `build-fpk.cmd`：Windows 一键打包入口，不要求安装 GNU Make；完整测试仍需单独执行 `make verify` 或对应的测试命令。
 
 ## 本地开发
 

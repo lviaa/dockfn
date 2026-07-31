@@ -313,12 +313,6 @@ p {
   place-items: center;
 }
 
-.message.success {
-  border-color: rgba(49, 195, 171, 0.35);
-  color: #b3fff3;
-  background: rgba(44, 187, 174, 0.13);
-}
-
 .message.error {
   border-color: rgba(230, 107, 103, 0.4);
   color: #ffe3e1;
@@ -556,7 +550,19 @@ code,
 .creator-dialog {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  min-height: min(540px, calc(100dvh - 8px));
+  height: min(620px, calc(100dvh - 8px));
+  min-height: 0;
+}
+
+@media (min-width: 621px) {
+  .creator-overlay {
+    padding: 8px 4px;
+  }
+
+  .creator-dialog {
+    height: min(620px, calc(100dvh - 16px));
+    max-height: min(620px, calc(100dvh - 16px));
+  }
 }
 
 .dialog-head {
@@ -668,46 +674,16 @@ code,
   gap: 7px;
 }
 
-.discovery-filters {
-  display: grid;
-  gap: 5px;
-  padding: 6px 7px;
-  border: 1px solid rgba(139, 197, 255, 0.14);
-  border-radius: 9px;
-  background: rgba(8, 27, 42, 0.72);
-}
-
-.discovery-filter-line {
+.discovery-toolbar {
   display: flex;
   min-width: 0;
   min-height: 25px;
   align-items: center;
-  gap: 7px;
+  justify-content: space-between;
+  gap: 8px;
+  white-space: nowrap;
 }
 
-.discovery-filter-label {
-  flex: 0 0 48px;
-  color: #7893a8;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.discovery-filter-options {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  gap: 4px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.discovery-filter-options::-webkit-scrollbar {
-  display: none;
-}
-
-.filter-chip,
 .installed-filter {
   display: inline-flex;
   flex: 0 0 auto;
@@ -724,25 +700,9 @@ code,
   white-space: nowrap;
 }
 
-.filter-chip:hover {
-  color: #dceeff;
-  border-color: rgba(109, 180, 255, 0.28);
-}
-
-.filter-chip.active {
-  color: #eaf6ff;
-  border-color: rgba(91, 175, 255, 0.5);
-  background: rgba(42, 120, 237, 0.26);
-}
-
-.filter-chip small,
 .installed-filter small {
   color: #7691a5;
   font-size: 8px;
-}
-
-.filter-chip.active small {
-  color: #a9d2ff;
 }
 
 .installed-filter {
@@ -767,9 +727,13 @@ code,
 }
 
 .discovery-result-count {
-  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
   color: #7893a8;
   font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .candidate-list {
@@ -789,20 +753,58 @@ code,
 .candidate-source-group {
   display: grid;
   gap: 7px;
+  padding: 7px;
+  border: 1px solid rgba(139, 197, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(8, 27, 42, 0.48);
 }
 
 .candidate-source-group + .candidate-source-group {
   margin-top: 3px;
 }
 
+.candidate-source-group.ignored {
+  border-color: rgba(241, 181, 67, 0.2);
+  background: rgba(67, 46, 14, 0.22);
+}
+
 .candidate-source-heading {
   display: flex;
+  width: 100%;
+  min-height: 28px;
   align-items: center;
   justify-content: space-between;
   gap: 9px;
-  padding: 2px 5px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
   color: #7f99ac;
+  background: transparent;
   font-size: 9px;
+  text-align: left;
+}
+
+.candidate-source-heading:hover {
+  background: rgba(101, 167, 214, 0.1);
+}
+
+.candidate-source-heading > svg {
+  flex: 0 0 auto;
+  color: #86a8be;
+  font-size: 15px;
+}
+
+.candidate-source-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-source-body {
+  display: grid;
+  gap: 7px;
 }
 
 .candidate-group {
@@ -872,6 +874,35 @@ code,
   color: inherit;
   background: #0c2132;
   text-align: left;
+}
+
+.candidate-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.candidate-ignore {
+  display: inline-flex;
+  min-width: 39px;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 5px 7px;
+  border: 1px solid rgba(139, 197, 255, 0.16);
+  border-radius: 8px;
+  color: #8faabc;
+  background: rgba(59, 100, 130, 0.1);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.candidate-ignore:hover {
+  border-color: rgba(241, 181, 67, 0.4);
+  color: #f4c978;
+  background: rgba(241, 181, 67, 0.12);
 }
 
 .candidate-card:hover {
@@ -1416,6 +1447,13 @@ code,
   gap: 7px;
 }
 
+.icon-cache-help {
+  width: 100%;
+  color: #819bad;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .file-button {
   min-height: 31px;
   padding: 0 9px;
@@ -1567,30 +1605,53 @@ code,
 }
 
 .diagnostic-logs article {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.diagnostic-card-head {
   display: flex;
+  min-height: 50px;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  padding: 7px 9px;
-  background: #102a3f;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b2031;
 }
 
-.diagnostic-card-head h3 {
+.diagnostic-file {
   display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 6px;
-  margin: 0;
+  gap: 9px;
+}
+
+.diagnostic-file > svg {
+  flex: 0 0 auto;
+  color: #6aaef0;
+  font-size: 18px;
+}
+
+.diagnostic-file > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.diagnostic-file strong,
+.diagnostic-file small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostic-file strong {
   color: #dcecf8;
   font-size: 11px;
 }
 
-.diagnostic-card-head > div,
+.diagnostic-file small {
+  color: #819bad;
+  font-size: 10px;
+}
+
 .log-viewer-actions {
   display: flex;
   align-items: center;
@@ -1613,20 +1674,6 @@ code,
 .log-copy-status {
   color: #87dbcf;
   font-size: 10px;
-}
-
-.diagnostic-logs pre {
-  margin: 0;
-  padding: 9px;
-  overflow: visible;
-  color: #a9c8dd;
-  background: #071522;
-  font:
-    10px/1.45 ui-monospace,
-    SFMono-Regular,
-    Consolas,
-    monospace;
-  white-space: pre-wrap;
 }
 
 .diagnostic-notice {
@@ -1754,6 +1801,7 @@ code,
 
   .endpoint {
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: 4px;
   }
@@ -1762,6 +1810,24 @@ code,
   .endpoint strong,
   .endpoint small {
     display: inline;
+  }
+
+  .endpoint-type,
+  .endpoint-port,
+  .endpoint-path {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .endpoint-type,
+  .endpoint-port {
+    flex: 0 0 auto;
+  }
+
+  .endpoint-path {
+    flex: 1 1 auto;
   }
 
   .statuses {
@@ -1876,7 +1942,7 @@ code,
   }
 
   .creator-dialog {
-    min-height: 100%;
+    height: 100%;
   }
 
   .dialog-head,
@@ -1949,10 +2015,6 @@ code,
 
   .log-viewer-dialog {
     height: 100%;
-  }
-
-  .diagnostic-card-head {
-    align-items: flex-start;
   }
 
   .log-action {

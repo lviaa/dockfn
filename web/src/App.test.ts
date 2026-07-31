@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createApp, nextTick, type App as VueApp } from 'vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 
 const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
@@ -45,6 +45,10 @@ const candidate = {
 
 let mounted: VueApp<Element> | undefined
 
+beforeEach(() => {
+  window.localStorage.clear()
+})
+
 afterEach(() => {
   vi.useRealTimers()
   mounted?.unmount()
@@ -65,8 +69,9 @@ async function mountPage() {
   return container
 }
 
-function response(items: unknown[]) {
-  return new Response(JSON.stringify({ items }), {
+function response(value: unknown) {
+  const body = Array.isArray(value) ? { items: value } : value
+  return new Response(JSON.stringify(body), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   })
@@ -78,7 +83,6 @@ describe('DockFN single page', () => {
     const page = await mountPage()
     await vi.waitFor(() => expect(page.textContent).toContain('家庭相册'))
     expect(page.textContent).toContain('DockFN')
-    expect(page.textContent).toContain('飞牛应用坞')
     expect(page.textContent).toContain('把已有 Web 服务接入 fnOS 桌面')
     expect(page.textContent).toContain('已注册应用 1')
     expect(
@@ -121,8 +125,9 @@ describe('DockFN single page', () => {
     ).toEqual(['手动填写', '重新扫描'])
     expect(page.querySelector('.discovery-step > .dialog-actions')).toBeNull()
     expect(page.querySelector('.candidate-source')?.textContent).toContain('Docker')
-    expect(page.querySelector('.discovery-filters')).not.toBeNull()
-    expect(page.querySelector('[data-filter-source="all"]')?.getAttribute('aria-pressed')).toBe(
+    expect(page.querySelector('.discovery-filters')).toBeNull()
+    expect(page.querySelector('.discovery-result-count')?.textContent).toContain('共 1 个 Web 端口')
+    expect(page.querySelector('.candidate-source-heading')?.getAttribute('aria-expanded')).toBe(
       'true',
     )
     expect(
@@ -168,6 +173,37 @@ describe('DockFN single page', () => {
     await nextTick()
     expect(page.querySelector<HTMLInputElement>('input[placeholder="例如：家庭相册"]')?.value).toBe(
       '',
+    )
+  })
+
+  it('persists ignored discovery services across scans', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([candidate]))
+      .mockResolvedValueOnce(response({ keys: [candidate.key] }))
+      .mockResolvedValueOnce(response([candidate]))
+    vi.stubGlobal('fetch', fetchMock)
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await vi.waitFor(() => expect(page.textContent).toContain('Docker 相册'))
+
+    page.querySelector<HTMLButtonElement>('.candidate-ignore')?.click()
+    expect(window.localStorage.getItem('dockfn.discovery.ignored.v1')).toContain(candidate.key)
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain('/discovery/ignored')
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      method: 'PUT',
+      body: JSON.stringify({ keys: [candidate.key] }),
+    })
+
+    page.querySelector<HTMLButtonElement>('.discovery-copy .primary-button')?.click()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+    const ignoredHeading = [
+      ...page.querySelectorAll<HTMLButtonElement>('.candidate-source-heading'),
+    ].find((item) => item.textContent?.includes('已忽略'))
+    ignoredHeading?.click()
+    await vi.waitFor(() =>
+      expect(page.querySelector<HTMLButtonElement>('.candidate-card')?.disabled).toBe(true),
     )
   })
 
@@ -458,8 +494,7 @@ describe('DockFN single page', () => {
     )
     const page = await mountPage()
     page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
-    await vi.waitFor(() => expect(page.querySelector('.discovery-filters')).not.toBeNull())
-    expect(page.querySelector('.candidate-card')).toBeNull()
+    await vi.waitFor(() => expect(page.querySelector('.installed-filter input')).not.toBeNull())
     const hideInstalled = page.querySelector<HTMLInputElement>('.installed-filter input')
     if (!hideInstalled) throw new Error('installed filter was not rendered')
     hideInstalled.checked = false
@@ -472,7 +507,7 @@ describe('DockFN single page', () => {
     )
   })
 
-  it('groups discovery results by service type and combines source and installed filters', async () => {
+  it('groups discovery results by source and supports collapsing and ignoring services', async () => {
     const dockerHost = {
       ...candidate,
       key: 'docker:metrics:9090',
@@ -521,34 +556,40 @@ describe('DockFN single page', () => {
     page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
     await vi.waitFor(() => expect(page.textContent).toContain('宿主机 Caddy'))
 
-    expect(
-      [...page.querySelectorAll('.candidate-source-heading .candidate-source')].map((item) =>
-        item.textContent?.trim(),
-      ),
-    ).toEqual(['Docker', 'Docker Host', '宿主机'])
-    expect(page.textContent).not.toContain('已安装服务')
-    expect(page.querySelector('.discovery-result-count')?.textContent).toContain('显示 3 / 4')
-    expect(page.textContent).not.toContain('全部标签')
-    expect(page.querySelector('[data-filter-tag]')).toBeNull()
-
-    page.querySelector<HTMLButtonElement>('[data-filter-source="host"]')?.click()
-    await nextTick()
-    expect([...page.querySelectorAll('.candidate-card')]).toHaveLength(1)
-    expect(page.textContent).toContain('宿主机 Caddy')
-    expect(page.textContent).not.toContain('Docker 相册')
-
-    page.querySelector<HTMLButtonElement>('[data-filter-source="all"]')?.click()
-    await nextTick()
-    expect([...page.querySelectorAll('.candidate-card')]).toHaveLength(3)
-    expect(page.textContent).toContain('Docker 相册')
-
     const hideInstalled = page.querySelector<HTMLInputElement>('.installed-filter input')
     if (!hideInstalled) throw new Error('installed filter was not rendered')
     hideInstalled.checked = false
     hideInstalled.dispatchEvent(new Event('change'))
     await nextTick()
-    expect([...page.querySelectorAll('.candidate-card')]).toHaveLength(4)
+
+    expect(
+      [...page.querySelectorAll('.candidate-source-heading .candidate-source')].map((item) =>
+        item.textContent?.trim(),
+      ),
+    ).toEqual(['Docker', 'Docker Host', '宿主机'])
     expect(page.textContent).toContain('已安装服务')
+    expect(page.querySelector('.discovery-result-count')?.textContent).toContain('共 4 个 Web 端口')
+    expect(page.querySelector('[data-filter-tag]')).toBeNull()
+
+    const hostHeading = [
+      ...page.querySelectorAll<HTMLButtonElement>('.candidate-source-heading'),
+    ].find((button) => button.textContent?.includes('宿主机'))
+    hostHeading?.click()
+    await nextTick()
+    expect(hostHeading?.getAttribute('aria-expanded')).toBe('false')
+    expect(page.textContent).not.toContain('宿主机 Caddy')
+
+    const ignoreButton = page.querySelector<HTMLButtonElement>('.candidate-ignore')
+    ignoreButton?.click()
+    await nextTick()
+    expect(page.textContent).toContain('已忽略')
+    const ignoredHeading = [
+      ...page.querySelectorAll<HTMLButtonElement>('.candidate-source-heading'),
+    ].find((button) => button.textContent?.includes('已忽略'))
+    expect(ignoredHeading?.getAttribute('aria-expanded')).toBe('false')
+    ignoredHeading?.click()
+    await nextTick()
+    expect(page.textContent).toContain('恢复')
   })
 
   it('shows progress while fnOS is installing and keeps a failure inside the creator', async () => {
@@ -732,10 +773,14 @@ describe('DockFN single page', () => {
     page.querySelector<HTMLButtonElement>('button[aria-label="打开诊断"]')?.click()
     await vi.waitFor(() =>
       expect(
-        page.querySelector<HTMLButtonElement>('button[aria-label="独立查看 helper.log"]'),
+        page.querySelector<HTMLButtonElement>('button[aria-label="查看 helper.log"]'),
       ).not.toBeNull(),
     )
-    page.querySelector<HTMLButtonElement>('button[aria-label="独立查看 helper.log"]')?.click()
+    expect(page.querySelector('.diagnostic-logs')?.textContent).toContain(
+      '权限助手与 fnOS 操作日志',
+    )
+    expect(page.querySelector('.diagnostic-logs')?.textContent).not.toContain('line-1')
+    page.querySelector<HTMLButtonElement>('button[aria-label="查看 helper.log"]')?.click()
     await nextTick()
     expect(page.querySelector('.log-viewer-dialog pre')?.textContent).toBe(diagnosticText)
 

@@ -7,7 +7,7 @@ fnOS 网关
    │ 管理员身份 + Unix socket
    ▼
 internal/http ──► internal/app
-                     ├── internal/config   apps.json 原子写
+                     ├── internal/config   apps.json/discovery.json 原子写
                      ├── internal/package 最小登记壳
                      └── internal/fnos    install/update/remove/discover
                                               │
@@ -35,6 +35,7 @@ internal/http ──► internal/app
 ```text
 data/
 ├── apps.json
+├── discovery.json
 ├── icons/<digest>/
 │   ├── ICON.PNG
 │   └── ICON_256.PNG
@@ -45,7 +46,7 @@ data/
 ├── staging/
 ```
 
-`apps.json` 的唯一业务实体是 `AppSpec`。`lastErrors` 是运维提示映射；ownership 与 package 文件都是实现收据，不形成第二套业务模型。
+`apps.json` 的唯一业务实体是 `AppSpec`。`lastErrors` 是运维提示映射；`discovery.json` 只保存管理员明确标记的忽略候选键，不保存扫描结果。ownership 与 package 文件都是实现收据，不形成第二套业务模型。两个 JSON 文件都使用原子写入。
 
 ## 同步流程
 
@@ -60,7 +61,7 @@ data/
 
 ## HTTP 接口
 
-共 14 个：
+共 16 个：
 
 ```text
 GET    /api/apps
@@ -73,10 +74,12 @@ POST   /api/apps/{id}/repair
 POST   /api/apps/{id}/rollback
 GET    /api/system/status
 POST   /api/discovery/scan
+GET    /api/discovery/ignored
+PUT    /api/discovery/ignored
 POST   /api/icons/discover
 POST   /api/icons/preview
 GET    /api/system/diagnostics
 DELETE /api/system/diagnostics
 ```
 
-前端主页面显示已登记应用，并以标签保留创建时的 Docker、宿主机、网络、进程、镜像和 WatchCow 来源信息。新增流程为“发现服务 → 核对信息 → 创建应用”：候选按容器或进程分组并显示来源标签，不加载业务图标；选择后预填入口信息，并在核对页依次验证 WatchCow/页面图标提示和少量常见 favicon 路径。用户修改访问路径后，在未手动填写、上传或清除图标的前提下，前端防抖请求该本地子页面，后端解析同源 `<link rel="icon">` 和 `<link rel="shortcut icon">`，并依次回退访问路径目录和服务根目录下的有限图标候选（包含 `/public/favicon.png`）；编辑已登记应用时同样执行。管理员可显式重试，识别失败会保留现有或默认图标并显示状态，不执行页面脚本或处理反爬机制。未配置自定义图标时，登记壳使用核对页预览的 DockFN 默认图标并叠加 DockFN 角标。确认创建后立即进入第 3 步显示安装和校验进度；成功状态提供关闭和继续创建，继续创建会重新扫描，失败则返回核对页并保留表单。手动填写从空表单开始。DockFN 提交 `<LaunchID>.dkfn` 入口，入口展示、FN Connect 域名和启动由 fnOS 负责。诊断接口返回脱敏日志尾部及最近一次扫描和安装失败快照；清理接口经 root helper 精确清理这些固定文件，不接受路径参数。
+前端主页面显示已登记应用，并以标签保留创建时的 Docker、宿主机、网络、进程、镜像和 WatchCow 来源信息。新增流程为“发现服务 → 核对信息 → 创建应用”：候选按 Docker、Docker Host、宿主机分组，分组有边界并可折叠；系统服务或无需入口的端口可移入默认收起的“已忽略”组，稍后恢复，不提供额外服务类型筛选。候选不加载业务图标；选择后预填入口信息，并在核对页依次验证 WatchCow/页面图标提示和少量常见图标路径。用户修改访问路径后，在未手动填写、上传或清除图标的前提下，前端防抖请求该本地子页面，后端解析同源 `<link rel="icon">` 和 `<link rel="shortcut icon">`，并依次回退访问路径目录和服务根目录下的 `/favicon.*`、`/public/favicon.*`、`/logo.*` 候选；PNG/JPEG/ICO 最大 2 MiB、4096×4096，最终缩放为桌面图标，SVG 仅作路径提示并在无法转换时提示手动上传。编辑已登记应用时同样执行。管理员可显式重试，识别失败会保留现有或默认图标并显示状态，不执行页面脚本或处理反爬机制。未配置自定义图标时，登记壳使用核对页预览的 DockFN 默认图标并叠加 DockFN 角标。确认创建后立即进入第 3 步显示安装和校验进度；成功状态提供关闭和继续创建，继续创建会重新扫描，失败则返回核对页并保留表单。手动填写从空表单开始。DockFN 提交 `<LaunchID>.dkfn` 入口，入口展示、FN Connect 域名和启动由 fnOS 负责。DockFN 在安装向导中主动获取入口壳存储分区编号，并在安装后固定使用该分区，不执行迁移。诊断接口默认只返回脱敏日志尾部状态，完整内容由独立查看接口在用户打开后提供；清理接口经 root helper 精确清理这些固定文件，不接受路径参数。

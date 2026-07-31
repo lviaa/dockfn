@@ -152,7 +152,7 @@ func manifest(spec app.AppSpec) []byte {
 		description = manifestValue(spec.DisplayName)
 	}
 	return []byte(fmt.Sprintf(
-		"appname=%s\ndisplay_name=%s\nversion=1.0.%d\ndesc=%s\nplatform=%s\narch=%s\nsource=thirdparty\nmaintainer=DockFN Project\ndistributor=DockFN Project\nos_min_version=1.1.3100\ninstall_type=root\ndesktop_uidir=ui\ndesktop_applaunchname=%s\nservice_port=%d\nctl_stop=true\ncheckport=false\n",
+		"appname=%s\ndisplay_name=%s\nversion=1.0.%d\ndesc=%s\nplatform=%s\narch=%s\nsource=thirdparty\nmaintainer=lviaa\nmaintainer_url=https://github.com/lviaa/dockfn\ndistributor=lviaa\ndistributor_url=https://github.com/lviaa/dockfn/releases\nos_min_version=1.1.3100\ninstall_type=root\ndesktop_uidir=ui\ndesktop_applaunchname=%s\nservice_port=%d\nctl_stop=true\ncheckport=false\n",
 		spec.AppName, manifestValue(spec.DisplayName), spec.Revision, description,
 		platform, architecture, app.DesktopEntryName(spec.AppName), spec.Port,
 	))

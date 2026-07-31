@@ -1,7 +1,7 @@
 {
   ".url": {
     "dockfn.main": {
-      "title": "飞牛应用坞",
+      "title": "DockFN",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
       "protocol": "",

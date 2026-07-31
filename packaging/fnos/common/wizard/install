@@ -1,0 +1,35 @@
+[
+  {
+    "stepTitle": "DockFN 安装说明",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "DockFN 只为已有 Web 服务创建 fnOS 桌面入口，不会安装、启动、停止或删除目标服务、Docker 容器、存储卷及业务数据。"
+      },
+      {
+        "type": "tips",
+        "helpText": "──────────────────────────────────────────────────────────"
+      },
+      {
+        "type": "text",
+        "field": "wizard_install_volume",
+        "label": "应用入口壳安装分区",
+        "initValue": "1",
+        "rules": [
+          {
+            "required": true,
+            "message": "请输入存储分区编号"
+          },
+          {
+            "pattern": "^[1-9][0-9]{0,2}$",
+            "message": "请输入 1–999 的分区编号，例如 1 表示 /vol1；不存在的分区会回退到 /vol1"
+          }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "请配置应用入口壳的存储分区编号，例如填写 1 表示 /vol1。安装后该位置固定，不会自动迁移，也不会改变目标服务的数据位置。若填写的分区不存在，将自动使用 /vol1。"
+      }
+    ]
+  }
+]
