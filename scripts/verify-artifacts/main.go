@@ -115,6 +115,12 @@ func inspectFPK(path, version string) {
 		"maintainer_url=https://github.com/lviaa/dockfn",
 		"distributor=lviaa", "distributor_url=https://github.com/lviaa/dockfn/releases",
 	)
+	description := manifestField(manifest, "desc")
+	if description == "" || len([]rune(description)) > 200 ||
+		!strings.Contains(description, "Web 服务") ||
+		!strings.Contains(description, "不会安装、启动、停止或删除") {
+		panic(path + " manifest has an invalid Chinese feature and caution description")
+	}
 	if strings.Contains(manifest, "wwfn") {
 		panic(path + " manifest still exposes the legacy product name")
 	}
@@ -209,6 +215,16 @@ func inspectFPK(path, version string) {
 	requireText(path+" fixed shell volume", mainScript, "install-volume", "wizard_install_volume", "TRIM_APPDEST_VOL", "DOCKFN_INSTALL_VOLUME")
 	callback := string(members["cmd/install_callback"].body)
 	requireText(path+" install volume callback", callback, "wizard_install_volume", "install-volume", "/vol")
+}
+
+func manifestField(manifest, key string) string {
+	prefix := key + "="
+	for _, line := range strings.Split(manifest, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
 
 func scanSource() {
