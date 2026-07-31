@@ -2,7 +2,7 @@
 
 ## 身份边界
 
-正式 FPK 只监听 fnOS 应用网关 Unix socket。只有网关 adapter 可以把 `X-Trim-*` 头转换为进程内 Actor；HTTP 鉴权模块从不直接读取这些头。所有 13 个 API 都要求 fnOS 管理员。
+正式 FPK 只监听 fnOS 应用网关 Unix socket。只有网关 adapter 可以把 `X-Trim-*` 头转换为进程内 Actor；HTTP 鉴权模块从不直接读取这些头。所有管理 API 都要求 fnOS 管理员。
 
 开发 TCP 模式只允许回环地址，并要求显式 `DOCKFN_DEV_ADMIN=1`。它不属于正式部署。
 

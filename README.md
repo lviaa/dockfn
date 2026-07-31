@@ -8,7 +8,7 @@ DockFN 将本机已有的 HTTP/HTTPS 服务登记为 fnOS 应用入口。DockFN 
 
 ## 功能
 
-- 手动发现宿主机和 Docker Web 服务，读取 WatchCow 建议并匹配已有 fnOS 入口。
+- 发现宿主机和 Docker Web 服务，读取 WatchCow 建议并匹配已有 fnOS 入口。
 - 创建、更新、检测、修复、回退和移除 fnOS 登记壳。
 - 支持 URL、iframe 和自动或自定义应用图标。
 - 提供安装诊断、脱敏日志和诊断清理。
@@ -31,9 +31,9 @@ DockFN 适合已经在 fnOS 主机固定端口提供访问、只需要补充桌�
 - 正式部署方式为 fnOS 原生 FPK，支持 x86_64 和 ARM64 构建。
 - 安装向导会主动配置后续入口壳的存储分区（例如填写 `1` 表示 `/vol1`）；不存在的分区编号会回退到 `/vol1`。该位置在安装后固定，不会自动迁移，也不会改变目标服务的数据位置。
 - 一个 DockFN 应用对应一个固定宿主机端口和一个 fnOS 桌面入口。
-- 服务发现必须由管理员手动触发，发现结果不会自动创建应用。
+- 服务发现不在后台运行；进入“新增应用”流程时自动扫描，也可手动重新扫描。发现结果不会自动创建应用。
 - DockFN 不提供反向代理、中继、公共 URL、DNS、证书或 Docker 生命周期管理。
-- appname 和桌面入口统一使用 `<ID>.dkfn`；FN Connect 域名、DNS 和证书由 fnOS 生成和管理。
+- appname 和桌面入口统一使用 `<入口ID>.dkfn`；FN Connect 域名、DNS 和证书由 fnOS 生成和管理。
 
 ## 安装
 
@@ -69,7 +69,7 @@ dist/fpk/dockfn-<version>-arm64.fpk
 dist/SHA256SUMS
 ```
 
-Windows 用户可双击根目录的 `build-fpk.cmd` 一键打包。脚本读取 [VERSION](VERSION)，自动执行前端构建、Windows 辅助程序编译、Linux x86_64/arm64 交叉编译、FPK 打包、校验和生成和产物检查；需要覆盖版本时可执行 `build-fpk.cmd -Version 0.1.1`。该入口需要 Go 1.26、Node.js 24、npm，以及 Git Bash 或 WSL 提供的 `bash`。若 `dist/fpk` 被旧的 WSL 文件锁定或不可写，会自动输出到 `dist/fpk-<version>`；如果整个 `dist` 目录不可写，需要先关闭占用它的 WSL 进程或修复目录权限。
+Windows 用户可双击根目录的 `build-fpk.cmd` 一键打包。脚本读取 [VERSION](VERSION)，自动执行前端构建、Windows 辅助程序编译、Linux x86_64/arm64 交叉编译、FPK 打包、校验和生成和产物检查；需要覆盖版本时可执行 `build-fpk.cmd -Version <version>`。该入口需要 Go 1.26、Node.js 24、npm，以及 Git Bash 或 WSL 提供的 `bash`。若 `dist/fpk` 被旧的 WSL 文件锁定或不可写，会自动输出到 `dist/fpk-<version>`；如果整个 `dist` 目录不可写，需要先关闭占用它的 WSL 进程或修复目录权限。
 
 构建入口分工如下：
 
@@ -103,6 +103,7 @@ x86_64 FPK 已在真实 fnOS 设备完成安装和核心功能验证。ARM64 FPK
 - [OpenAPI](api/openapi.yaml)
 - [架构决策](docs/adr/README.md)
 - [发布流程](docs/release.md)
+- [0.1.0 发布说明](docs/releases/v0.1.0.md)
 
 ## 许可证
 
