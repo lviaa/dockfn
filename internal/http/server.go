@@ -22,10 +22,20 @@ import (
 
 type Server struct {
 	Apps             *app.Service
+	Discovery        DiscoveryPreferences
 	Version          string
 	HelperAvailable  func() bool
 	Diagnostics      func() diagnostics.Snapshot
 	ClearDiagnostics func(context.Context) error
+}
+
+type DiscoveryPreferences interface {
+	ListIgnored(context.Context) ([]string, error)
+	ReplaceIgnored(context.Context, []string) error
+}
+
+type ignoredCandidatesInput struct {
+	Keys []string `json:"keys"`
 }
 
 type Problem struct {
@@ -79,7 +89,43 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 		s.respond(writer, request, http.StatusOK, map[string]any{"items": items}, err)
 	case path == "/discovery/scan" && request.Method == http.MethodPost:
 		items, err := s.Apps.Discover(request.Context())
-		s.respond(writer, request, http.StatusOK, map[string]any{"items": items}, err)
+		if err != nil {
+			s.respond(writer, request, http.StatusOK, nil, err)
+			return
+		}
+		payload := map[string]any{"items": items}
+		if s.Discovery != nil {
+			keys, listErr := s.Discovery.ListIgnored(request.Context())
+			if listErr != nil {
+				s.respond(writer, request, http.StatusOK, nil, listErr)
+				return
+			}
+			payload["ignoredKeys"] = keys
+		}
+		s.respond(writer, request, http.StatusOK, payload, nil)
+	case path == "/discovery/ignored" && request.Method == http.MethodGet:
+		if s.Discovery == nil {
+			s.problem(writer, request, http.StatusNotFound, "NOT_FOUND", "No such DockFN endpoint.", "Refresh the page and try again.", nil)
+			return
+		}
+		keys, err := s.Discovery.ListIgnored(request.Context())
+		s.respond(writer, request, http.StatusOK, map[string]any{"keys": keys}, err)
+	case path == "/discovery/ignored" && request.Method == http.MethodPut:
+		if s.Discovery == nil {
+			s.problem(writer, request, http.StatusNotFound, "NOT_FOUND", "No such DockFN endpoint.", "Refresh the page and try again.", nil)
+			return
+		}
+		var input ignoredCandidatesInput
+		if !decode(writer, request, &input) {
+			return
+		}
+		err := s.Discovery.ReplaceIgnored(request.Context(), input.Keys)
+		if err != nil {
+			s.respond(writer, request, http.StatusOK, nil, err)
+			return
+		}
+		keys, err := s.Discovery.ListIgnored(request.Context())
+		s.respond(writer, request, http.StatusOK, map[string]any{"keys": keys}, err)
 	case path == "/icons/preview" && request.Method == http.MethodPost:
 		var input app.IconPreviewInput
 		if !decode(writer, request, &input) {

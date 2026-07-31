@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/dockfn/dockfn/internal/app"
@@ -89,5 +90,36 @@ func TestFileStoreAllowsSafeAppNameReplacement(t *testing.T) {
 	stored, err := store.Get(context.Background(), spec.ID)
 	if err != nil || stored.AppName != "media.dkfn" {
 		t.Fatalf("updated spec=%#v err=%v", stored, err)
+	}
+}
+
+func TestDiscoveryStoreWritesAndReloadsIgnoredKeys(t *testing.T) {
+	data := t.TempDir()
+	store, err := OpenDiscoveryStore(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.ReplaceIgnored(context.Background(), []string{"docker:demo:8080", "host:panel:12212", "docker:demo:8080"}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := OpenDiscoveryStore(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := reloaded.ListIgnored(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"docker:demo:8080", "host:panel:12212"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("ignored keys=%v, want %v", keys, want)
+	}
+	body, err := os.ReadFile(filepath.Join(data, "discovery.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if json.Unmarshal(body, &document) != nil || int(document["formatVersion"].(float64)) != discoveryPreferencesVersion {
+		t.Fatalf("invalid discovery document: %s", body)
 	}
 }

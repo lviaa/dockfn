@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"debug/elf"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,6 +25,8 @@ type archiveMember struct {
 
 func main() {
 	versionFlag := flag.String("version", "", "release version; defaults to VERSION")
+	artifactDirFlag := flag.String("artifact-dir", "dist/fpk", "directory containing the two FPK artifacts")
+	checksumFileFlag := flag.String("checksum-file", "dist/SHA256SUMS", "checksum manifest path")
 	flag.Parse()
 	version := strings.TrimSpace(*versionFlag)
 	if version == "" {
@@ -36,11 +39,12 @@ func main() {
 			panic("VERSION is empty")
 		}
 	}
+	artifactDir := filepath.Clean(*artifactDirFlag)
 	expected := []string{
-		"dist/fpk/dockfn-native-arm64.fpk",
-		"dist/fpk/dockfn-native-x86_64.fpk",
+		filepath.Join(artifactDir, "dockfn-"+version+"-arm64.fpk"),
+		filepath.Join(artifactDir, "dockfn-"+version+"-x86_64.fpk"),
 	}
-	actual, err := filepath.Glob("dist/fpk/*.fpk")
+	actual, err := filepath.Glob(filepath.Join(artifactDir, "*.fpk"))
 	if err != nil {
 		panic(err)
 	}
@@ -49,20 +53,22 @@ func main() {
 		panic(fmt.Sprintf("found %d FPK artifacts, want exactly 2", len(actual)))
 	}
 	for index, path := range actual {
-		if filepath.ToSlash(path) != expected[index] {
+		if filepath.Clean(path) != filepath.Clean(expected[index]) {
 			panic(fmt.Sprintf("unexpected FPK artifact %s", path))
 		}
 		inspectFPK(path, version)
 	}
-	for _, required := range []string{
+	requiredFiles := []string{
 		"VERSION", "README.md", "docs/architecture.md", "docs/operations.md", "docs/security.md",
-		"docs/release.md", "docs/adr/README.md", "api/openapi.yaml", "dist/SHA256SUMS",
-	} {
+		"docs/release.md", "docs/adr/README.md", "api/openapi.yaml",
+		filepath.Clean(*checksumFileFlag),
+	}
+	for _, required := range requiredFiles {
 		requireRegular(required)
 	}
 	scanSource()
 	checkWebBundleSize()
-	fmt.Println("artifact-check: 2 native FPKs, both ELF architectures, lifecycle hooks, compact embedded UI, checksums, ownership and source boundaries verified")
+	fmt.Println("artifact-check: 2 architecture-specific FPKs, both ELF architectures, lifecycle hooks, compact embedded UI, checksums, ownership and source boundaries verified")
 }
 
 func checkWebBundleSize() {
@@ -84,8 +90,8 @@ func checkWebBundleSize() {
 func inspectFPK(path, version string) {
 	members := readArchive(path, mustOpen(path))
 	requiredOuter := []string{
-		"app.tgz", "manifest", "ICON.PNG", "ICON_256.PNG", "LICENSE",
-		"config/resource", "config/privilege", "wizard/uninstall",
+		"app.tgz", "manifest", "ICON.PNG", "ICON_256.PNG",
+		"config/resource", "config/privilege", "wizard/install", "wizard/uninstall",
 		"cmd/main", "cmd/migrate", "cmd/install_init", "cmd/install_callback",
 		"cmd/upgrade_init", "cmd/upgrade_callback", "cmd/uninstall_init",
 		"cmd/uninstall_callback", "cmd/config_init", "cmd/config_callback", "cmd/preflight",
@@ -104,8 +110,10 @@ func inspectFPK(path, version string) {
 	}
 	manifest := string(members["manifest"].body)
 	requireText(path+" manifest", manifest,
-		"appname=dockfn", "display_name=飞牛应用坞", "version="+version,
-		"desktop_applaunchname=dockfn.main", "maintainer=DockFN Project",
+		"appname=dockfn", "display_name=DockFN", "version="+version,
+		"desktop_applaunchname=dockfn.main", "maintainer=lviaa",
+		"maintainer_url=https://github.com/lviaa/dockfn",
+		"distributor=lviaa", "distributor_url=https://github.com/lviaa/dockfn/releases",
 	)
 	if strings.Contains(manifest, "wwfn") {
 		panic(path + " manifest still exposes the legacy product name")
@@ -160,6 +168,47 @@ func inspectFPK(path, version string) {
 	requireText(path+" privilege", privilege, `"run-as":"root"`, `"username":"dockfn"`, `"groupname":"dockfn"`)
 	wizard := string(members["wizard/uninstall"].body)
 	requireText(path+" uninstall wizard", wizard, `"field": "keep_registrations"`, `"initValue": "true"`, "目标服务")
+	installWizard := string(members["wizard/install"].body)
+	var wizardSteps []struct {
+		Items []struct {
+			Type     string `json:"type"`
+			Field    string `json:"field"`
+			HelpText string `json:"helpText"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(installWizard), &wizardSteps); err != nil {
+		panic(fmt.Errorf("%s install wizard is not valid JSON: %w", path, err))
+	}
+	tips := 0
+	volumeField := false
+	for _, step := range wizardSteps {
+		for _, item := range step.Items {
+			switch item.Type {
+			case "tips":
+				tips++
+				if strings.TrimSpace(item.HelpText) == "" {
+					panic(path + " install wizard contains an empty tips item")
+				}
+				if strings.Contains(item.HelpText, "\n") {
+					panic(path + " install wizard tips must use separate items instead of embedded line breaks")
+				}
+			case "text":
+				if item.Field == "wizard_install_volume" {
+					volumeField = true
+				}
+			}
+		}
+	}
+	if tips == 0 || !volumeField {
+		panic(path + " install wizard must contain non-empty tips and wizard_install_volume")
+	}
+	if _, present := members["LICENSE"]; present {
+		panic(path + " must not include LICENSE because the installer shows it as a license agreement")
+	}
+	mainScript := string(members["cmd/main"].body)
+	requireText(path+" fixed shell volume", mainScript, "install-volume", "wizard_install_volume", "TRIM_APPDEST_VOL", "DOCKFN_INSTALL_VOLUME")
+	callback := string(members["cmd/install_callback"].body)
+	requireText(path+" install volume callback", callback, "wizard_install_volume", "install-volume", "/vol")
 }
 
 func scanSource() {

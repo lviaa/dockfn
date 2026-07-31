@@ -30,7 +30,8 @@ import (
 	"github.com/dockfn/dockfn/internal/iconimage"
 )
 
-const maxIconBytes = 512 << 10
+const maxIconBytes = 2 << 20
+const maxIconDimension = 4096
 
 var (
 	iconLinkPattern      = regexp.MustCompile(`(?is)<link\b[^>]*>`)
@@ -38,10 +39,22 @@ var (
 	commonIconURIs       = []string{
 		"/favicon.ico",
 		"/favicon.png",
+		"/favicon.jpg",
+		"/favicon.jpeg",
+		"/favicon.svg",
+		"/public/favicon.ico",
 		"/apple-touch-icon.png",
 		"/apple-touch-icon-precomposed.png",
 		"/icon.png",
+		"/public/favicon.jpg",
+		"/public/favicon.jpeg",
 		"/public/favicon.png",
+		"/public/favicon.svg",
+		"/logo.png",
+		"/logo.ico",
+		"/logo.jpg",
+		"/logo.jpeg",
+		"/logo.svg",
 	}
 )
 
@@ -220,18 +233,21 @@ func saveIconBytes(dataDir string, raw []byte) (string, error) {
 
 func decodeIconSource(raw []byte) (image.Image, error) {
 	if len(raw) == 0 || len(raw) > maxIconBytes {
-		return nil, errors.New("icon must be between 1 byte and 512 KiB")
+		return nil, errors.New("icon must be between 1 byte and 2 MiB")
 	}
 	source, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil || (format != "png" && format != "jpeg") {
+		if looksLikeSVG(raw) {
+			return nil, errors.New("SVG icons must be converted to PNG, JPEG, or ICO before use")
+		}
 		source, err = decodeICO(raw)
 		if err != nil {
 			return nil, errors.New("icon must contain a valid PNG, JPEG, or ICO image")
 		}
 	}
 	bounds := source.Bounds()
-	if bounds.Dx() < 1 || bounds.Dy() < 1 || bounds.Dx() > 2048 || bounds.Dy() > 2048 {
-		return nil, errors.New("icon dimensions must be between 1x1 and 2048x2048")
+	if bounds.Dx() < 1 || bounds.Dy() < 1 || bounds.Dx() > maxIconDimension || bounds.Dy() > maxIconDimension {
+		return nil, errors.New("icon dimensions must be between 1x1 and 4096x4096")
 	}
 	return source, nil
 }
@@ -281,11 +297,15 @@ func (s *Service) DiscoverIcon(ctx context.Context, input IconDiscoverInput) (Ic
 	}
 	candidates = append(candidates, commonIconURIs...)
 	seen := make(map[string]bool, len(candidates))
+	sawSVG := false
 	for _, iconURI := range candidates {
 		if seen[iconURI] {
 			continue
 		}
 		seen[iconURI] = true
+		if strings.EqualFold(filepath.Ext(strings.SplitN(iconURI, "?", 2)[0]), ".svg") {
+			sawSVG = true
+		}
 		dataURL, err := s.PreviewIcon(ctx, IconPreviewInput{
 			IconURI: iconURI, Protocol: protocol, Port: input.Port,
 		})
@@ -293,7 +313,16 @@ func (s *Service) DiscoverIcon(ctx context.Context, input IconDiscoverInput) (Ic
 			return IconDiscovery{IconURI: iconURI, DataURL: dataURL}, nil
 		}
 	}
+	if sawSVG {
+		return IconDiscovery{}, iconValidationError("iconUri", errors.New("found only SVG icons; convert one to PNG, JPEG, or ICO and upload it manually"))
+	}
 	return IconDiscovery{}, iconValidationError("iconUri", errors.New("no page or common service icon was found"))
+}
+
+func looksLikeSVG(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return bytes.HasPrefix(trimmed, []byte("<svg")) ||
+		(bytes.HasPrefix(trimmed, []byte("<?xml")) && bytes.Contains(trimmed, []byte("<svg")))
 }
 
 func readServicePage(ctx context.Context, protocol string, port uint16, path string) (*url.URL, []byte, error) {

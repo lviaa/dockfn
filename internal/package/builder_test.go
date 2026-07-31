@@ -152,7 +152,8 @@ func TestRenderRegistrationShell(t *testing.T) {
 		"appname=photos.dkfn", "display_name=Home Photos",
 		"version=1.0.4", "desktop_applaunchname=photos.dkfn",
 		"service_port=8443", "ctl_stop=true", "checkport=false",
-		"maintainer=DockFN Project",
+		"maintainer=lviaa", "maintainer_url=https://github.com/lviaa/dockfn",
+		"distributor=lviaa", "distributor_url=https://github.com/lviaa/dockfn/releases",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("manifest missing %q:\n%s", expected, manifest)

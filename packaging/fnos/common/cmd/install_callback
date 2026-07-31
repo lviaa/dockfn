@@ -1,3 +1,24 @@
 #!/bin/sh
 set -eu
+
+volume="${wizard_install_volume:-}"
+case "$volume" in
+  ''|*[!0-9]*|0*|????*)
+    echo "DockFN 安装向导中的应用入口壳安装分区无效。" >&2
+    exit 1
+    ;;
+esac
+
+if [ ! -d "/vol$volume" ]; then
+  volume=1
+fi
+[ -d "/vol$volume" ] || {
+  echo "DockFN 找不到所选存储分区，且默认分区 /vol1 不存在。" >&2
+  exit 1
+}
+
+config_dir="${TRIM_PKGVAR:?}/config"
+mkdir -p "$config_dir"
+printf '%s\n' "$volume" >"$config_dir/install-volume"
+chmod 0640 "$config_dir/install-volume"
 exec "$(dirname "$0")/migrate" install

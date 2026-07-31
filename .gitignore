@@ -1,5 +1,6 @@
 bin/
 dist/
+build-output/
 .local-data/
 .qa-data/
 qa/

@@ -28,10 +28,10 @@ jobs:
         run: make fpk COMMIT="$GITHUB_SHA" BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       - uses: actions/upload-artifact@v5
         with:
-          name: dockfn-native-fpk
+          name: dockfn-fpk
           path: |
-            dist/fpk/dockfn-native-x86_64.fpk
-            dist/fpk/dockfn-native-arm64.fpk
+            dist/fpk/dockfn-*-x86_64.fpk
+            dist/fpk/dockfn-*-arm64.fpk
             dist/SHA256SUMS
 
   release:

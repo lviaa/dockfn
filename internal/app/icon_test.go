@@ -217,6 +217,59 @@ func TestDiscoverIconUsesPublicFaviconFallback(t *testing.T) {
 	}
 }
 
+func TestDiscoverIconTriesLogoImageExtensions(t *testing.T) {
+	icon := testICO(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/logo.jpg" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "image/vnd.microsoft.icon")
+		_, _ = writer.Write(icon)
+	}))
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Service{}).DiscoverIcon(context.Background(), IconDiscoverInput{
+		Protocol: "http", Port: uint16(port), Path: "/missing",
+	})
+	if err != nil || result.IconURI != "/logo.jpg" {
+		t.Fatalf("logo extension fallback was not discovered: result=%#v err=%v", result, err)
+	}
+}
+
+func TestDiscoverIconReportsSVGWhenNoRasterIconIsAvailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/logo.svg" {
+			writer.Header().Set("Content-Type", "image/svg+xml")
+			_, _ = writer.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1"/></svg>`))
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&Service{}).DiscoverIcon(context.Background(), IconDiscoverInput{
+		Protocol: "http", Port: uint16(port), Path: "/missing",
+	})
+	if err == nil || !strings.Contains(err.Error(), "SVG") {
+		t.Fatalf("SVG-only discovery did not provide an actionable error: %v", err)
+	}
+}
+
 func TestLinkedPageIconRejectsCrossOriginReference(t *testing.T) {
 	page, err := url.Parse("http://127.0.0.1:8080/panel/")
 	if err != nil {
@@ -245,6 +298,35 @@ func TestSaveIconBytesAcceptsClassic32BitICO(t *testing.T) {
 	got := color.RGBAModel.Convert(decoded.At(32, 32)).(color.RGBA)
 	if got.R < 200 || got.A != 255 {
 		t.Fatalf("ICO pixel was not decoded: %#v", got)
+	}
+}
+
+func TestSaveIconBytesResizesLargeRasterIcon(t *testing.T) {
+	data := t.TempDir()
+	canvas := image.NewRGBA(image.Rect(0, 0, 1024, 1024))
+	for y := 0; y < 1024; y++ {
+		for x := 0; x < 1024; x++ {
+			canvas.Set(x, y, color.RGBA{uint8(x % 251), uint8(y % 251), 80, 255})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		t.Fatal(err)
+	}
+	path, err := saveIconBytes(data, encoded.Bytes())
+	if err != nil {
+		t.Fatalf("large raster icon should be normalized automatically: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(data, filepath.FromSlash(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := png.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Bounds().Dx() != 64 || decoded.Bounds().Dy() != 64 {
+		t.Fatalf("large raster icon was not normalized to 64x64: %v", decoded.Bounds())
 	}
 }
 
