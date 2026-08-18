@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $repoRoot
 
 function Invoke-Checked {
@@ -92,7 +92,6 @@ try {
 
 Write-Host 'Building FPK archives...'
 $packageOutput = Join-Path $repoRoot 'dist/fpk'
-$existingPackages = @()
 $defaultOutputUsable = $true
 if (Test-Path -LiteralPath $packageOutput) {
     try {
@@ -102,13 +101,9 @@ if (Test-Path -LiteralPath $packageOutput) {
     } catch {
         $defaultOutputUsable = $false
     }
-    if ($defaultOutputUsable) {
-        $existingPackages = @(Get-ChildItem -LiteralPath $packageOutput -Filter '*.fpk' -File)
-    }
 }
-if (-not $defaultOutputUsable -or $existingPackages.Count -gt 0) {
-    $packageOutput = Join-Path $repoRoot ("dist/fpk-" + $Version)
-    Write-Warning "The default dist/fpk directory is unavailable or contains existing FPK files; writing the new package to $packageOutput"
+if (-not $defaultOutputUsable) {
+    throw 'The canonical dist/fpk directory is unavailable; close programs using its files and retry'
 }
 $packageParent = Split-Path -Parent $packageOutput
 New-Item -ItemType Directory -Path $packageParent -Force | Out-Null

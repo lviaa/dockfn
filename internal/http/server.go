@@ -23,6 +23,7 @@ import (
 type Server struct {
 	Apps             *app.Service
 	Discovery        DiscoveryPreferences
+	Settings         SettingsPreferences
 	Version          string
 	HelperAvailable  func() bool
 	Diagnostics      func() diagnostics.Snapshot
@@ -32,6 +33,23 @@ type Server struct {
 type DiscoveryPreferences interface {
 	ListIgnored(context.Context) ([]string, error)
 	ReplaceIgnored(context.Context, []string) error
+}
+
+type SettingsPreferences interface {
+	Get(context.Context) (app.Settings, error)
+	Replace(context.Context, app.Settings) error
+}
+
+type settingsInput struct {
+	EntryPrefixTemplate string `json:"entryPrefixTemplate"`
+	DefaultOpenType     string `json:"defaultOpenType"`
+	DefaultAllUsers     *bool  `json:"defaultAllUsers"`
+	AutoScanOnCreate    *bool  `json:"autoScanOnCreate"`
+	ShowDockFNBadge     *bool  `json:"showDockFNBadge"`
+}
+
+type identitySuggestionInput struct {
+	DisplayName string `json:"displayName"`
 }
 
 type ignoredCandidatesInput struct {
@@ -86,7 +104,66 @@ func (s *Server) api(writer http.ResponseWriter, request *http.Request) {
 	switch {
 	case path == "/apps" && request.Method == http.MethodGet:
 		items, err := s.Apps.List(request.Context())
-		s.respond(writer, request, http.StatusOK, map[string]any{"items": items}, err)
+		payload := map[string]any{"items": items}
+		if err == nil && s.Settings != nil {
+			settings, settingsErr := s.Settings.Get(request.Context())
+			if settingsErr != nil {
+				err = settingsErr
+			} else {
+				payload["settings"] = settings
+			}
+		}
+		s.respond(writer, request, http.StatusOK, payload, err)
+	case path == "/settings" && request.Method == http.MethodGet:
+		if s.Settings == nil {
+			s.problem(writer, request, http.StatusNotFound, "NOT_FOUND", "No such DockFN endpoint.", "Refresh the page and try again.", nil)
+			return
+		}
+		settings, err := s.Settings.Get(request.Context())
+		s.respond(writer, request, http.StatusOK, settings, err)
+	case path == "/settings" && request.Method == http.MethodPut:
+		if s.Settings == nil {
+			s.problem(writer, request, http.StatusNotFound, "NOT_FOUND", "No such DockFN endpoint.", "Refresh the page and try again.", nil)
+			return
+		}
+		var input settingsInput
+		if !decode(writer, request, &input) {
+			return
+		}
+		missing := make([]app.FieldError, 0, 3)
+		if input.DefaultAllUsers == nil {
+			missing = append(missing, app.FieldError{Field: "defaultAllUsers", Message: "is required"})
+		}
+		if input.AutoScanOnCreate == nil {
+			missing = append(missing, app.FieldError{Field: "autoScanOnCreate", Message: "is required"})
+		}
+		if input.ShowDockFNBadge == nil {
+			missing = append(missing, app.FieldError{Field: "showDockFNBadge", Message: "is required"})
+		}
+		if len(missing) > 0 {
+			s.respond(writer, request, http.StatusOK, nil, &app.ValidationError{Fields: missing})
+			return
+		}
+		settings := app.Settings{
+			EntryPrefixTemplate: input.EntryPrefixTemplate,
+			DefaultOpenType:     input.DefaultOpenType,
+			DefaultAllUsers:     *input.DefaultAllUsers,
+			AutoScanOnCreate:    *input.AutoScanOnCreate,
+			ShowDockFNBadge:     *input.ShowDockFNBadge,
+		}
+		if err := s.Settings.Replace(request.Context(), settings); err != nil {
+			s.respond(writer, request, http.StatusOK, nil, err)
+			return
+		}
+		settings, err := s.Settings.Get(request.Context())
+		s.respond(writer, request, http.StatusOK, settings, err)
+	case path == "/entry-ids/suggest" && request.Method == http.MethodPost:
+		var input identitySuggestionInput
+		if !decode(writer, request, &input) {
+			return
+		}
+		identity, err := s.Apps.SuggestIdentity(request.Context(), input.DisplayName)
+		s.respond(writer, request, http.StatusOK, identity, err)
 	case path == "/discovery/scan" && request.Method == http.MethodPost:
 		items, err := s.Apps.Discover(request.Context())
 		if err != nil {
@@ -219,6 +296,9 @@ func (s *Server) appRoute(writer http.ResponseWriter, request *http.Request, tai
 	case "check":
 		view, err := s.Apps.Check(request.Context(), id)
 		s.respond(writer, request, http.StatusOK, view, err)
+	case "refresh-icon":
+		view, err := s.Apps.RefreshIcon(request.Context(), id)
+		s.respond(writer, request, http.StatusOK, app.OperationResult{App: view, Code: "ICON_REFRESHED"}, err)
 	case "repair":
 		view, err := s.Apps.Repair(request.Context(), id)
 		s.respond(writer, request, http.StatusOK, app.OperationResult{App: view, Code: "REPAIRED"}, err)

@@ -123,3 +123,61 @@ func TestDiscoveryStoreWritesAndReloadsIgnoredKeys(t *testing.T) {
 		t.Fatalf("invalid discovery document: %s", body)
 	}
 }
+
+func TestSettingsStoreDefaultsValidatesAndReloads(t *testing.T) {
+	data := t.TempDir()
+	store, err := OpenSettingsStore(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := store.Get(context.Background())
+	if err != nil || defaults != app.DefaultSettings() {
+		t.Fatalf("defaults=%#v err=%v", defaults, err)
+	}
+	invalid := defaults
+	invalid.EntryPrefixTemplate = "{id}"
+	if err = store.Replace(context.Background(), invalid); err == nil {
+		t.Fatal("template without a fixed identifier was accepted")
+	}
+	want := defaults
+	want.EntryPrefixTemplate = "{id}.dkfn"
+	want.DefaultOpenType = "iframe"
+	want.DefaultAllUsers = true
+	want.AutoScanOnCreate = false
+	want.ShowDockFNBadge = false
+	if err = store.Replace(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := OpenSettingsStore(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reloaded.Get(context.Background())
+	if err != nil || got != want {
+		t.Fatalf("reloaded settings=%#v err=%v", got, err)
+	}
+	if _, err = os.Stat(filepath.Join(data, "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSettingsStoreMigratesEarlyPrefixTemplate(t *testing.T) {
+	data := t.TempDir()
+	body := `{"formatVersion":1,"settings":{"entryPrefixTemplate":"d{id}","defaultOpenType":"url","defaultAllUsers":false,"autoScanOnCreate":true,"showDockFNBadge":true}}`
+	if err := os.WriteFile(filepath.Join(data, "settings.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenSettingsStore(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(context.Background())
+	if err != nil || got.EntryPrefixTemplate != app.DefaultEntryPrefixTemplate {
+		t.Fatalf("migrated settings=%#v err=%v", got, err)
+	}
+
+	got.EntryPrefixTemplate = ""
+	if err = store.Replace(context.Background(), got); err == nil {
+		t.Fatal("empty template was silently reset instead of rejected")
+	}
+}

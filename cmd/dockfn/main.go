@@ -89,6 +89,10 @@ func runServer() int {
 	if err != nil {
 		return fail(err)
 	}
+	settingsStore, err := config.OpenSettingsStore(runtimeConfig.DataDir)
+	if err != nil {
+		return fail(err)
+	}
 	platform := &fnos.Client{
 		Socket: runtimeConfig.HelperSocket, StagingDir: runtimeConfig.StagingDir,
 		DataDir: runtimeConfig.DataDir, Timeout: runtimeConfig.CommandTimeout + 5*time.Second,
@@ -98,10 +102,11 @@ func runServer() int {
 		Builder: &shellpkg.Builder{
 			DataDir: runtimeConfig.DataDir, StagingDir: runtimeConfig.StagingDir,
 		},
-		Platform: platform, Discoverer: platform, DataDir: runtimeConfig.DataDir, StagingDir: runtimeConfig.StagingDir,
+		Platform: platform, Discoverer: platform, Settings: settingsStore,
+		DataDir: runtimeConfig.DataDir, StagingDir: runtimeConfig.StagingDir,
 	}
 	server := &apihttp.Server{
-		Apps: service, Discovery: discoveryStore, Version: version, HelperAvailable: platform.Available,
+		Apps: service, Discovery: discoveryStore, Settings: settingsStore, Version: version, HelperAvailable: platform.Available,
 		Diagnostics:      diagnostics.Reader{LogDir: runtimeConfig.LogDir, DataDir: runtimeConfig.DataDir}.Snapshot,
 		ClearDiagnostics: platform.ClearDiagnostics,
 	}

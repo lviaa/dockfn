@@ -93,6 +93,183 @@ describe('DockFN single page', () => {
     expect(logo?.getAttribute('src')).toContain('dockfn-logo')
     expect(page.textContent).toContain('8080')
     expect(page.querySelector('main')).not.toBeNull()
+    expect(page.querySelector('button[aria-label="同步桌面图标"]')?.getAttribute('title')).toBe(
+      '同步桌面图标',
+    )
+    expect(page.querySelector('button[aria-label="编辑应用"]')?.getAttribute('title')).toBe(
+      '编辑应用',
+    )
+    expect(page.querySelector('button[aria-label="移除应用入口"]')?.getAttribute('title')).toBe(
+      '移除应用入口',
+    )
+  })
+
+  it('confirms desktop icon synchronization before calling the dedicated endpoint', async () => {
+    const refreshed = { ...application, revision: 2, showDockFNBadge: false }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([application]))
+      .mockResolvedValueOnce(response({ app: refreshed, code: 'ICON_REFRESHED' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const page = await mountPage()
+    await vi.waitFor(() =>
+      expect(page.querySelector('button[aria-label="同步桌面图标"]')).not.toBeNull(),
+    )
+    page.querySelector<HTMLButtonElement>('button[aria-label="同步桌面图标"]')?.click()
+    await vi.waitFor(() => expect(page.textContent).toContain('同步“家庭相册”的桌面图标？'))
+    expect(page.textContent).toContain('桌面图标可能会短暂消失')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    page.querySelector<HTMLButtonElement>('.icon-sync-dialog .primary-button')?.click()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('./api/apps/012345abcdef/refresh-icon')
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' })
+    await vi.waitFor(() => expect(page.textContent).toContain('桌面入口已同步'))
+  })
+
+  it('does not close the create application dialog when its backdrop is clicked', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response([])))
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await vi.waitFor(() => expect(page.querySelector('.creator-dialog')).not.toBeNull())
+    page.querySelector<HTMLElement>('.creator-overlay')?.click()
+    await nextTick()
+    expect(page.querySelector('.creator-dialog')).not.toBeNull()
+  })
+
+  it('edits global defaults, requires a complete template, and closes after saving', async () => {
+    const current = {
+      entryPrefixTemplate: 'dkfn.{id}',
+      defaultOpenType: 'url',
+      defaultAllUsers: false,
+      autoScanOnCreate: true,
+      showDockFNBadge: true,
+    }
+    const saved = {
+      ...current,
+      entryPrefixTemplate: '{id}.dkfn',
+      defaultOpenType: 'iframe',
+      autoScanOnCreate: false,
+      showDockFNBadge: false,
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response({ items: [], settings: current }))
+      .mockResolvedValueOnce(response(current))
+      .mockResolvedValueOnce(response(saved))
+    vi.stubGlobal('fetch', fetchMock)
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('button[aria-label="打开全局配置"]')?.click()
+    await vi.waitFor(() => expect(page.querySelector('.settings-dialog')).not.toBeNull())
+
+    const template = page.querySelector<HTMLInputElement>('input[placeholder="dkfn.{id}"]')
+    if (!template) throw new Error('fnID template input was not rendered')
+    template.value = '{id}'
+    template.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(page.querySelector('.field-error')?.textContent).toContain('不能仅包含')
+    expect(
+      page.querySelector<HTMLButtonElement>('.settings-actions .primary-button')?.disabled,
+    ).toBe(true)
+
+    template.value = '{id}.dkfn'
+    template.dispatchEvent(new Event('input'))
+    page.querySelector<HTMLButtonElement>('.settings-open-type button:nth-of-type(2)')?.click()
+    const toggles = page.querySelectorAll<HTMLInputElement>(
+      '.settings-section .compact-toggle input',
+    )
+    toggles[1]?.click()
+    toggles[2]?.click()
+    await nextTick()
+    page.querySelector<HTMLButtonElement>('.settings-actions .primary-button')?.click()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    const payload = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+    expect(payload).toMatchObject(saved)
+    await vi.waitFor(() => expect(page.querySelector('.settings-dialog')).toBeNull())
+    expect(page.querySelector('#settings-saved-title')?.textContent).toBe('配置已保存')
+  })
+
+  it('applies global create defaults without automatically scanning when disabled', async () => {
+    const configured = {
+      entryPrefixTemplate: 'app-{id}',
+      defaultOpenType: 'iframe',
+      defaultAllUsers: true,
+      autoScanOnCreate: false,
+      showDockFNBadge: false,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(response({ items: [], settings: configured }))
+    vi.stubGlobal('fetch', fetchMock)
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await nextTick()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    page.querySelector<HTMLButtonElement>('.discovery-copy-actions .secondary-button')?.click()
+    await nextTick()
+    expect(
+      page
+        .querySelector<HTMLButtonElement>('.segmented-control [data-value="iframe"]')
+        ?.getAttribute('aria-checked'),
+    ).toBe('true')
+    expect(page.querySelector<HTMLInputElement>('.toggle-line input')?.checked).toBe(true)
+    expect(page.querySelector('.icon-preview-wrap .dockfn-badge')).toBeNull()
+    expect(page.querySelector('.field-help')?.textContent).toContain('app-<应用 ID>')
+  })
+
+  it('animates the discovery indicator while a service scan is running', async () => {
+    let finishScan: ((response: Response) => void) | undefined
+    const scan = new Promise<Response>((resolve) => {
+      finishScan = resolve
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response([])).mockReturnValueOnce(scan))
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await nextTick()
+    expect(
+      page.querySelector('.discovery-copy-actions .primary-button .discovery-spinner'),
+    ).not.toBeNull()
+    expect(
+      page.querySelector<HTMLButtonElement>('.discovery-copy-actions .primary-button')?.disabled,
+    ).toBe(true)
+
+    finishScan?.(response([]))
+    await vi.waitFor(() =>
+      expect(
+        page.querySelector('.discovery-copy-actions .primary-button .discovery-spinner'),
+      ).toBeNull(),
+    )
+  })
+
+  it('fills an editable pinyin entry ID from the display name', async () => {
+    vi.useFakeTimers()
+    const configured = {
+      entryPrefixTemplate: 'dkfn.{id}',
+      defaultOpenType: 'url',
+      defaultAllUsers: false,
+      autoScanOnCreate: false,
+      showDockFNBadge: true,
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response({ items: [], settings: configured }))
+      .mockResolvedValueOnce(
+        response({ entryId: 'fei-niu-ying-yong-wu', appName: 'dkfn.fei-niu-ying-yong-wu' }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await nextTick()
+    page.querySelector<HTMLButtonElement>('.discovery-copy-actions .secondary-button')?.click()
+    await nextTick()
+
+    const name = page.querySelector<HTMLInputElement>('input[placeholder="例如：本地服务"]')
+    const entryID = page.querySelector<HTMLInputElement>('input[placeholder="留空则自动生成"]')
+    if (!name || !entryID) throw new Error('create form was not rendered')
+    name.value = '飞牛应用坞'
+    name.dispatchEvent(new Event('input'))
+    await vi.advanceTimersByTimeAsync(350)
+    await nextTick()
+
+    expect(entryID.value).toBe('fei-niu-ying-yong-wu')
+    expect(page.querySelector('.field-help')?.textContent).toContain('dkfn.fei-niu-ying-yong-wu')
   })
 
   it('uses discovery first, allows manual entry, then pre-fills the review form from a candidate', async () => {
@@ -100,6 +277,9 @@ describe('DockFN single page', () => {
       .fn()
       .mockResolvedValueOnce(response([]))
       .mockResolvedValueOnce(response([candidate]))
+      .mockResolvedValueOnce(
+        response({ entryId: 'docker-xiang-ce', appName: 'dkfn.docker-xiang-ce' }),
+      )
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ dataUrl: 'data:image/png;base64,cHJldmlldw==' }), {
           status: 200,
@@ -112,7 +292,7 @@ describe('DockFN single page', () => {
     await nextTick()
     const dialog = page.querySelector('[role="dialog"]')
     expect(dialog?.textContent).toContain('从本机发现 Web 服务')
-    expect(dialog?.querySelector('input[placeholder="例如：家庭相册"]')).toBeNull()
+    expect(dialog?.querySelector('input[placeholder="例如：本地服务"]')).toBeNull()
 
     await vi.waitFor(() => expect(page.textContent).toContain('Docker 相册'))
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/discovery/scan')
@@ -137,7 +317,7 @@ describe('DockFN single page', () => {
     expect(page.querySelector('.candidate-card img')).toBeNull()
     page.querySelector<HTMLButtonElement>('.candidate-card')?.click()
     await nextTick()
-    expect(page.querySelector<HTMLInputElement>('input[placeholder="例如：家庭相册"]')?.value).toBe(
+    expect(page.querySelector<HTMLInputElement>('input[placeholder="例如：本地服务"]')?.value).toBe(
       'Docker 相册',
     )
     expect(page.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe('8443')
@@ -171,7 +351,7 @@ describe('DockFN single page', () => {
     await nextTick()
     page.querySelector<HTMLButtonElement>('.discovery-copy-actions .secondary-button')?.click()
     await nextTick()
-    expect(page.querySelector<HTMLInputElement>('input[placeholder="例如：家庭相册"]')?.value).toBe(
+    expect(page.querySelector<HTMLInputElement>('input[placeholder="例如：本地服务"]')?.value).toBe(
       '',
     )
   })
@@ -213,6 +393,9 @@ describe('DockFN single page', () => {
       .mockResolvedValueOnce(response([]))
       .mockResolvedValueOnce(response([{ ...candidate, iconUri: undefined }]))
       .mockResolvedValueOnce(
+        response({ entryId: 'docker-xiang-ce', appName: 'dkfn.docker-xiang-ce' }),
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ message: 'icon not found' }), {
           status: 422,
           headers: { 'Content-Type': 'application/json' },
@@ -236,8 +419,8 @@ describe('DockFN single page', () => {
         'data:image/png;base64,ZGlzY292ZXJlZA==',
       ),
     )
-    const firstIconRequest = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
-    const secondIconRequest = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))
+    const firstIconRequest = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))
+    const secondIconRequest = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))
     expect(firstIconRequest.iconUri).toBe('/favicon.ico')
     expect(secondIconRequest.iconUri).toBe('/favicon.png')
     expect(page.querySelector<HTMLInputElement>('input[placeholder*="/favicon.ico"]')?.value).toBe(
@@ -441,6 +624,9 @@ describe('DockFN single page', () => {
       .mockResolvedValueOnce(response([]))
       .mockResolvedValueOnce(response([candidate]))
       .mockResolvedValueOnce(
+        response({ entryId: 'docker-xiang-ce', appName: 'dkfn.docker-xiang-ce' }),
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ dataUrl: 'data:image/png;base64,cHJldmlldw==' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -468,7 +654,7 @@ describe('DockFN single page', () => {
     await vi.waitFor(() => expect(page.querySelector('.completion-step')).not.toBeNull())
     expect(page.querySelector('[data-step="complete"]')?.classList.contains('active')).toBe(true)
     expect(page.textContent).toContain('应用创建完成')
-    const payload = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))
+    const payload = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))
     expect(payload.origin).toEqual({
       source: 'docker',
       sourceDetail: 'photos:latest',
@@ -504,6 +690,40 @@ describe('DockFN single page', () => {
     expect(page.textContent).toContain('已由 DockFN 登记')
     expect(page.querySelector<HTMLButtonElement>('.candidate-card')?.title).toContain(
       '已由 DockFN 登记',
+    )
+  })
+
+  it('persists the choice to hide registered discovery services after reopening', async () => {
+    const duplicate = { ...candidate, registrationSuggestion: 'already-registered' as const }
+    const initialFetch = vi
+      .fn()
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([duplicate]))
+    vi.stubGlobal('fetch', initialFetch)
+    let page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await vi.waitFor(() => expect(page.querySelector('.installed-filter input')).not.toBeNull())
+    const initialFilter = page.querySelector<HTMLInputElement>('.installed-filter input')
+    if (!initialFilter) throw new Error('installed filter was not rendered')
+    initialFilter.checked = true
+    initialFilter.dispatchEvent(new Event('change'))
+    await nextTick()
+    expect(window.localStorage.getItem('dockfn.discovery.hide-installed.v1')).toBe('true')
+
+    mounted?.unmount()
+    mounted = undefined
+    document.body.innerHTML = ''
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(response([]))
+        .mockResolvedValueOnce(response([duplicate])),
+    )
+    page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await vi.waitFor(() =>
+      expect(page.querySelector<HTMLInputElement>('.installed-filter input')?.checked).toBe(true),
     )
   })
 
@@ -614,7 +834,7 @@ describe('DockFN single page', () => {
     await nextTick()
     page.querySelector<HTMLButtonElement>('.discovery-step .secondary-button')?.click()
     await nextTick()
-    const name = page.querySelector<HTMLInputElement>('input[placeholder="例如：家庭相册"]')
+    const name = page.querySelector<HTMLInputElement>('input[placeholder="例如：本地服务"]')
     if (!name) throw new Error('display name input was not rendered')
     name.value = '测试应用'
     name.dispatchEvent(new Event('input'))
@@ -642,6 +862,7 @@ describe('DockFN single page', () => {
     expect(payload.iconUri).toBe('/favicon.ico')
     expect(page.querySelector('[data-step="complete"]')?.classList.contains('active')).toBe(true)
     expect(page.querySelector('[role="status"].completion-progress')).not.toBeNull()
+    expect(page.querySelector('.completion-loader .completion-spinner')).not.toBeNull()
     expect(page.textContent).toContain('正在创建应用入口')
     expect(page.textContent).toContain('提交 fnOS 应用中心并校验入口')
 
@@ -681,7 +902,7 @@ describe('DockFN single page', () => {
     await nextTick()
     page.querySelector<HTMLButtonElement>('.discovery-step .secondary-button')?.click()
     await nextTick()
-    const name = page.querySelector<HTMLInputElement>('input[placeholder*="家庭相册"]')
+    const name = page.querySelector<HTMLInputElement>('input[placeholder*="本地服务"]')
     if (!name) throw new Error('display name input was not rendered')
     name.value = '测试应用'
     name.dispatchEvent(new Event('input'))
@@ -713,7 +934,7 @@ describe('DockFN single page', () => {
     await vi.waitFor(() => expect(page.textContent).toContain('暂无可选服务'))
     page.querySelector<HTMLButtonElement>('.discovery-copy-actions .secondary-button')?.click()
     await nextTick()
-    const name = page.querySelector<HTMLInputElement>('input[placeholder*="家庭相册"]')
+    const name = page.querySelector<HTMLInputElement>('input[placeholder*="本地服务"]')
     if (!name) throw new Error('display name input was not rendered')
     name.value = '测试应用'
     name.dispatchEvent(new Event('input'))
@@ -737,6 +958,8 @@ describe('DockFN single page', () => {
     const dialog = page.querySelector('[role="alertdialog"]')
     expect(dialog?.textContent).toContain('不会停止或删除目标服务')
     expect(dialog?.textContent).toContain('存储卷及业务数据')
+    expect(dialog?.querySelector('.danger-button')?.textContent).toContain('移除应用入口')
+    expect(dialog?.querySelector('.danger-button')?.textContent).not.toContain('仅移除')
   })
 
   it('does not show an open action that DockFN cannot resolve safely', async () => {
@@ -760,7 +983,7 @@ describe('DockFN single page', () => {
         .mockResolvedValueOnce(
           new Response(
             JSON.stringify({
-              logs: [{ name: 'helper.log', text: diagnosticText, present: true }],
+              logs: [{ name: 'runtime.log', text: diagnosticText, present: true }],
               reports: [],
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -773,20 +996,25 @@ describe('DockFN single page', () => {
     page.querySelector<HTMLButtonElement>('button[aria-label="打开诊断"]')?.click()
     await vi.waitFor(() =>
       expect(
-        page.querySelector<HTMLButtonElement>('button[aria-label="查看 helper.log"]'),
+        page.querySelector<HTMLButtonElement>('button[aria-label="查看 运行日志"]'),
       ).not.toBeNull(),
     )
     expect(page.querySelector('.diagnostic-logs')?.textContent).toContain(
-      '权限助手与 fnOS 操作日志',
+      '管理服务与权限助手的最近输出',
     )
     expect(page.querySelector('.diagnostic-logs')?.textContent).not.toContain('line-1')
-    page.querySelector<HTMLButtonElement>('button[aria-label="查看 helper.log"]')?.click()
+    page.querySelector<HTMLButtonElement>('button[aria-label="查看 运行日志"]')?.click()
     await nextTick()
     expect(page.querySelector('.log-viewer-dialog pre')?.textContent).toBe(diagnosticText)
 
-    page.querySelector<HTMLButtonElement>('button[aria-label="复制完整 helper.log"]')?.click()
+    page.querySelector<HTMLButtonElement>('button[aria-label="复制完整 运行日志"]')?.click()
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticText))
-    await vi.waitFor(() => expect(page.textContent).toContain('helper.log 已复制'))
+    await vi.waitFor(() => expect(page.textContent).toContain('运行日志 已复制'))
+  })
+
+  it('keeps diagnostic rows content-sized at the top of the dialog', () => {
+    expect(styles).toMatch(/\.diagnostic-logs\s*\{[^}]*grid-auto-rows:\s*max-content/)
+    expect(styles).toMatch(/\.diagnostic-logs\s*\{[^}]*align-content:\s*start/)
   })
 
   it('clears only DockFN diagnostic history after explicit confirmation', async () => {
@@ -796,7 +1024,7 @@ describe('DockFN single page', () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            logs: [{ name: 'helper.log', text: 'old history', present: true }],
+            logs: [{ name: 'runtime.log', text: 'old history', present: true }],
             reports: [{ name: 'last-discovery.json', text: '{}', present: true }],
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -806,8 +1034,8 @@ describe('DockFN single page', () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            logs: [{ name: 'helper.log', text: 'diagnostic history cleared', present: true }],
-            reports: [{ name: 'last-discovery.json', text: '', present: false }],
+            logs: [{ name: 'runtime.log', text: 'diagnostic history cleared', present: true }],
+            reports: [],
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -837,5 +1065,58 @@ describe('DockFN single page', () => {
     )
     await vi.waitFor(() => expect(page.textContent).toContain('历史诊断记录已清空'))
     expect(page.textContent).not.toContain('old history')
+  })
+
+  it('shows an empty state instead of unavailable diagnostic file rows', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(response([]))
+        .mockResolvedValueOnce(response({ logs: [], reports: [] })),
+    )
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('button[aria-label="打开诊断"]')?.click()
+    await vi.waitFor(() => expect(page.textContent).toContain('暂无诊断记录'))
+    expect(page.querySelector('.diagnostic-row')).toBeNull()
+    expect(
+      page.querySelector<HTMLButtonElement>('button[aria-label="清空诊断历史"]')?.disabled,
+    ).toBe(true)
+  })
+
+  it('accepts null diagnostic arrays from an older installed backend', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(response([]))
+        .mockResolvedValueOnce(response({ logs: null, reports: null })),
+    )
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('button[aria-label="打开诊断"]')?.click()
+    await vi.waitFor(() => expect(page.textContent).toContain('暂无诊断记录'))
+    expect(page.querySelector('.diagnostics-loading')).toBeNull()
+  })
+
+  it('shows a retryable error in the diagnostics dialog when loading fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(response([]))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ message: '诊断接口暂不可用', suggestion: '确认服务运行后重试。' }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+        .mockResolvedValueOnce(response({ logs: [], reports: [] })),
+    )
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('button[aria-label="打开诊断"]')?.click()
+    await vi.waitFor(() => expect(page.textContent).toContain('诊断接口暂不可用'))
+    expect(page.querySelector('.diagnostics-loading')).toBeNull()
+    page.querySelector<HTMLButtonElement>('button[data-diagnostics-action="retry"]')?.click()
+    await vi.waitFor(() => expect(page.textContent).toContain('暂无诊断记录'))
   })
 })

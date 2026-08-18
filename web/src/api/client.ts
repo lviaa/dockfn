@@ -1,9 +1,11 @@
 export type AppSpec = {
   id: string
   appName: string
+  entryId?: string
   displayName: string
   description?: string
   iconPath?: string
+  showDockFNBadge?: boolean
   origin?: AppOrigin
   openType: 'iframe' | 'url'
   protocol: 'http' | 'https'
@@ -11,6 +13,11 @@ export type AppSpec = {
   path: string
   allUsers: boolean
   revision: number
+}
+
+export type IdentitySuggestion = {
+  entryId: string
+  appName: string
 }
 
 export type AppOrigin = {
@@ -47,6 +54,14 @@ export type AppInput = {
   allUsers: boolean
 }
 
+export type DockFNSettings = {
+  entryPrefixTemplate: string
+  defaultOpenType: 'iframe' | 'url'
+  defaultAllUsers: boolean
+  autoScanOnCreate: boolean
+  showDockFNBadge: boolean
+}
+
 export type DiscoveryCandidate = {
   key: string
   displayName: string
@@ -76,7 +91,7 @@ export type Diagnostics = {
 
 export type OperationResult = {
   app: AppView
-  code: 'CREATED' | 'UPDATED' | 'REPAIRED' | 'ROLLED_BACK'
+  code: 'CREATED' | 'UPDATED' | 'ICON_REFRESHED' | 'REPAIRED' | 'ROLLED_BACK'
 }
 
 type Problem = {

@@ -7,7 +7,7 @@ fnOS 网关
    │ 管理员身份 + Unix socket
    ▼
 internal/http ──► internal/app
-                     ├── internal/config   apps.json/discovery.json 原子写
+                     ├── internal/config   apps.json/discovery.json/settings.json 原子写
                      ├── internal/package 最小登记壳
                      └── internal/fnos    install/update/remove/discover
                                               │
@@ -26,7 +26,7 @@ internal/http ──► internal/app
 
 ## 模块职责
 
-`internal/app` 封装 create、update、check、repair、rollback、remove 和 discover 的同步流程，包括稳定标识、端口探测、候选去重、包轮换、失败不落库和所有权检查。
+`internal/app` 封装 create、update、check、refresh-icon、repair、rollback、remove 和 discover 的同步流程，包括稳定标识、端口探测、候选去重、包轮换、失败不落库和所有权检查。`refresh-icon` 只重建入口壳图标并套用全局角标设置，不探测或操作目标服务。
 
 `internal/fnos` 隔离 fnOS 高权限能力。生产环境通过 Unix socket 调用权限助手，测试使用内存实现。`internal/config` 负责原子配置写入，`internal/package` 负责生成并校验登记壳，`internal/http` 负责管理员接口。
 
@@ -36,6 +36,7 @@ internal/http ──► internal/app
 TRIM_PKGVAR/data/
 ├── apps.json
 ├── discovery.json
+├── settings.json
 ├── icons/<digest>/
 │   ├── ICON.PNG
 │   └── ICON_256.PNG
@@ -46,12 +47,12 @@ TRIM_PKGVAR/data/
 ├── staging/
 ```
 
-以上是 FPK 数据目录中的相对路径。`apps.json` 的唯一业务实体是 `AppSpec`；`lastErrors` 是运维提示映射；`discovery.json` 只保存管理员明确标记的忽略候选键，不保存扫描结果。ownership 与 package 文件都是实现收据，不形成第二套业务模型。两个 JSON 文件都使用原子写入。
+以上是 FPK 数据目录中的相对路径。`apps.json` 的唯一业务实体是 `AppSpec`；`lastErrors` 是运维提示映射；`discovery.json` 只保存管理员明确标记的忽略候选键，不保存扫描结果；`settings.json` 保存全局 fnID 模板和新增应用默认值。ownership 与 package 文件都是实现收据，不形成第二套业务模型。三个 JSON 文件都使用原子写入。
 
 ## 同步流程
 
 - 发现：管理员进入新增流程 → helper 只读列出 TCP 监听端口、Docker 已发布 IPv4 端口、容器网络/PID、WatchCow 标签和已安装 fnOS 入口 → 将原生 IPv4 及双栈通配监听统一为可探测的 IPv4 地址，排除具体 IPv6 地址 → 用 cgroup/PID namespace 补全 host 网络容器归属 → 通过 IPv4 完成 HTTP/HTTPS 可访问性分类 → 从已获取根页记录同源 `<link rel="icon">` 提示但不请求图标 → 按协议、端口、路径匹配已安装入口 → 以内存候选返回并写入可诊断快照；不创建 FPK、不自动登记。IPv6-only 监听和发布地址不进入候选；WatchCow `service_port` 只决定首选候选，不污染同容器的其他端口。
-- 创建：验证 → 端口探测 → 分配稳定内部 ID 与 Launch ID → staging 生成（产品说明为空时只在 manifest 中用应用名称补齐 `desc`）→ helper 安装 → **分别验证 `/var/apps/{AppName}/manifest` 与 `target/ui/config`、`DesktopEntryName(AppName)` 的所选 `url/iframe` 打开方式、字符串端口、`url`、权限和两个 PNG 图标** → 保存当前 FPK → 原子创建 AppSpec。通过发现候选创建时，AppSpec 同时保存来源类型、容器或进程名、镜像说明、网络/PID 和 WatchCow 标识的只读快照；这些字段只服务于列表标签和搜索，不参与控制、重绑定或对账。AppName 和入口 ID 同为 `<LaunchID>.dkfn`；Launch ID 只允许 1–27 位小写字母、数字和内部连字符，必须以字母开头，留空时使用 `d` 加内部 ID；打开方式默认 `url`。
+- 创建：读取并验证全局配置 → 验证输入 → 根据显示名称生成可编辑的拼音/英文应用 ID → 分配稳定内部 ID → 服务端将应用 ID 代入完整 fnOS ID 模板并再次校验 → 端口探测 → staging 生成（产品说明为空时只在 manifest 中用应用名称补齐 `desc`）→ helper 安装 → **分别验证 `/var/apps/{AppName}/manifest` 与 `target/ui/config`、`DesktopEntryName(AppName)` 的所选 `url/iframe` 打开方式、字符串端口、`url`、权限和两个 PNG 图标** → 保存当前 FPK → 原子创建 AppSpec。通过发现候选创建时，AppSpec 同时保存来源类型、容器或进程名、镜像说明、网络/PID 和 WatchCow 标识的只读快照；这些字段只服务于列表标签和搜索，不参与控制、重绑定或对账。应用 ID 只允许 1–27 位小写字母、数字和内部连字符并以字母开头；默认完整模板为 `dkfn.{id}`，模板不会隐式追加后缀；打开方式默认 `url`。
 - 更新/修复：AppName 不变时，revision +1 → 探测 → helper 仅对 ownership 确认的壳卸载旧 FPK 并安装新 FPK → 校验成功后 current 轮换为 previous → 原子更新 AppSpec。由于 fnOS 的 `install-fpk` 不覆盖已安装手工 FPK，替换失败或桌面入口校验失败会从 `packages/current` 恢复上一成功壳。
 - Launch ID 迁移：检查新 appname 无冲突 → 安装并验证新壳 → 移除旧壳 → 轮换包并原子更新 AppSpec。中途失败会移除替代壳并恢复旧壳；内部 12 位 ID 与包历史键不变。
 - 回退：读取上一份 AppSpec 内容 → 使用新 revision 重新生成并安装 → 当前/上一次互换。
@@ -66,10 +67,13 @@ TRIM_PKGVAR/data/
 ```text
 GET    /api/apps
 POST   /api/apps
+GET    /api/settings
+PUT    /api/settings
 GET    /api/apps/{id}
 PUT    /api/apps/{id}
 DELETE /api/apps/{id}
 POST   /api/apps/{id}/check
+POST   /api/apps/{id}/refresh-icon
 POST   /api/apps/{id}/repair
 POST   /api/apps/{id}/rollback
 GET    /api/system/status
@@ -82,6 +86,6 @@ GET    /api/system/diagnostics
 DELETE /api/system/diagnostics
 ```
 
-前端主页面显示已登记应用，并以标签保留创建时的 Docker、宿主机、网络、进程、镜像和 WatchCow 来源信息。新增流程为“发现服务 → 核对信息 → 创建应用”：进入流程时自动扫描，候选按来源分组并可折叠，已忽略候选单独保存；选择候选后才填充表单并执行图标识别，手动填写从空表单开始。确认创建后立即进入第 3 步显示安装和入口校验进度，失败返回核对页，成功可关闭或继续创建。详细交互、图标规则和诊断操作见 [运维文档](operations.md)。
+前端主页面显示已登记应用，并以标签保留创建时的 Docker、宿主机、网络、进程、镜像和 WatchCow 来源信息。全局配置窗口管理 fnID 模板和新增表单默认值，模板只在服务端解析，客户端只显示预览。新增流程为“发现服务 → 核对信息 → 创建应用”：默认进入流程时自动扫描，可在全局配置中关闭；候选按来源分组并可折叠，已忽略候选单独保存；选择候选后才填充表单并执行图标识别，手动填写从空表单开始。确认创建后立即进入第 3 步显示安装和入口校验进度，失败返回核对页，成功可关闭或继续创建。详细交互、图标规则和诊断操作见 [运维文档](operations.md)。
 
-DockFN 提交 `<LaunchID>.dkfn` 入口；入口展示、FN Connect 域名和启动由 fnOS 负责。安装向导获取入口壳存储分区编号并在安装后固定使用该分区，不执行迁移。诊断接口默认返回脱敏日志尾部和报告摘要，清理接口经 root helper 精确清理固定文件，不接受路径参数。
+DockFN 提交全局模板渲染后的完整 fnOS ID；入口展示、FN Connect 域名和启动由 fnOS 负责。安装向导获取入口壳存储分区编号并在安装后固定使用该分区，不执行迁移。诊断接口默认返回脱敏的最近扫描、最近安装失败和非空合并运行日志，跳过空文件与 fnOS 临时生命周期日志；清理接口经 root helper 精确清理固定文件，不接受路径参数。

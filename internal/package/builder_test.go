@@ -97,6 +97,26 @@ func TestRegistrationShellIconsContainTheDockFNBadge(t *testing.T) {
 	}
 }
 
+func TestRegistrationShellCanKeepTheOriginalIconWithoutBadge(t *testing.T) {
+	baseSmall, err := defaultIcon(64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseLarge, err := defaultIcon(256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := packageTestSpec()
+	spec.ShowDockFNBadge = app.Bool(false)
+	small, large, err := applyDockFNBadge(spec, baseSmall, baseLarge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(small, baseSmall) || !bytes.Equal(large, baseLarge) {
+		t.Fatal("disabled badge setting changed the original icon")
+	}
+}
+
 func TestEmbeddedDockFNBadgeUsesHighResolutionSource(t *testing.T) {
 	config, err := png.DecodeConfig(bytes.NewReader(dockFNBadge))
 	if err != nil {

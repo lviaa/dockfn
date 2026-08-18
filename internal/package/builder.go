@@ -190,15 +190,7 @@ func (b *Builder) icons(spec app.AppSpec) ([]byte, []byte, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		badgedSmall, err := withDockFNBadge(small, 64)
-		if err != nil {
-			return nil, nil, err
-		}
-		badgedLarge, err := withDockFNBadge(large, 256)
-		if err != nil {
-			return nil, nil, err
-		}
-		return badgedSmall, badgedLarge, nil
+		return applyDockFNBadge(spec, small, large)
 	}
 	smallPath := filepath.Join(b.DataDir, filepath.FromSlash(spec.IconPath))
 	iconRoot := filepath.Join(b.DataDir, "icons")
@@ -213,6 +205,13 @@ func (b *Builder) icons(spec app.AppSpec) ([]byte, []byte, error) {
 	large, err := readPNG(largePath, 256)
 	if err != nil {
 		return nil, nil, err
+	}
+	return applyDockFNBadge(spec, small, large)
+}
+
+func applyDockFNBadge(spec app.AppSpec, small, large []byte) ([]byte, []byte, error) {
+	if !app.DockFNBadgeEnabled(spec) {
+		return small, large, nil
 	}
 	badgedSmall, err := withDockFNBadge(small, 64)
 	if err != nil {

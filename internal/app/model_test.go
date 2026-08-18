@@ -9,7 +9,7 @@ import (
 func TestValidateAppSpec(t *testing.T) {
 	t.Parallel()
 	valid := AppSpec{
-		ID: "012345abcdef", AppName: "photos.dkfn", DisplayName: "Photos",
+		ID: "012345abcdef", AppName: "dkfn.photos", EntryID: "photos", DisplayName: "Photos",
 		OpenType: "iframe", Protocol: "http", Port: 8080, Path: "/", Revision: 1,
 	}
 	if err := Validate(valid); err != nil {
@@ -21,7 +21,8 @@ func TestValidateAppSpec(t *testing.T) {
 		field  string
 	}{
 		{"id", func(spec *AppSpec) { spec.ID = "../escape" }, "id"},
-		{"appName", func(spec *AppSpec) { spec.AppName = "other.app" }, "appName"},
+		{"appName", func(spec *AppSpec) { spec.AppName = "Other/App" }, "appName"},
+		{"entryId", func(spec *AppSpec) { spec.EntryID = "1photos" }, "entryId"},
 		{"openType", func(spec *AppSpec) { spec.OpenType = "native" }, "openType"},
 		{"protocol", func(spec *AppSpec) { spec.Protocol = "ftp" }, "protocol"},
 		{"origin source", func(spec *AppSpec) { spec.Origin = &Origin{Source: "remote"} }, "origin.source"},
@@ -60,55 +61,94 @@ func TestNormalizeOpenTypeDefaultsToURL(t *testing.T) {
 	}
 }
 
-func TestNewAppNameIsStable(t *testing.T) {
+func TestResolveIdentityUsesFullTemplateAndStableFallback(t *testing.T) {
 	t.Parallel()
-	first, err := NewAppName("012345abcdef")
+	first, err := ResolveIdentity("012345abcdef", "dkfn.{id}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewAppName("012345abcdef")
+	second, err := ResolveIdentity("012345abcdef", "dkfn.{id}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != "d012345abcdef.dkfn" || second != first {
+	if first.AppName != "dkfn.d012345abcdef" || first.EntryID != "d012345abcdef" || second != first {
 		t.Fatalf("unexpected stable appName %q / %q", first, second)
 	}
-	if len(first) > 32 || first[0] < 'a' || first[0] > 'z' {
+	if len(first.AppName) > 63 || first.AppName[0] < 'a' || first.AppName[0] > 'z' {
 		t.Fatalf("generated fnOS appName is not install-safe: %q", first)
 	}
 }
 
-func TestNewAppNameUsesSafeOptionalEntryPrefix(t *testing.T) {
+func TestResolveIdentityUsesRequestedEntryID(t *testing.T) {
 	t.Parallel()
-	got, err := NewAppName("012345abcdef", " blinko-notes ")
+	got, err := ResolveIdentity("012345abcdef", "{id}.dkfn", " blinko-notes ", "Blinko")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "blinko-notes.dkfn" {
+	if got.AppName != "blinko-notes.dkfn" || got.EntryID != "blinko-notes" {
 		t.Fatalf("custom appName=%q", got)
 	}
 	for _, prefix := range []string{"Blinko", "-bad", "bad.", "bad/name", "1panel2", strings.Repeat("a", 28), strings.Repeat("2", 27)} {
-		if _, err = NewAppName("012345abcdef", prefix); err == nil {
+		if _, err = ResolveIdentity("012345abcdef", "dkfn.{id}", prefix, ""); err == nil {
 			t.Fatalf("unsafe entry prefix %q was accepted", prefix)
 		}
 	}
 }
 
-func TestNewAppNameRejectsNumericRequestForFnOSSafety(t *testing.T) {
+func TestEntryPrefixTemplateDescribesTheCompleteFnOSID(t *testing.T) {
 	t.Parallel()
-	if _, err := NewAppName("012345abcdef", "1panel2"); err == nil {
-		t.Fatal("numeric custom appName was accepted")
+	for _, template := range []string{"dkfn.{id}", "{id}.dkfn", "app-{id}", "fn.{id}.web"} {
+		if err := ValidateEntryPrefixTemplate(template); err != nil {
+			t.Fatalf("safe template %q rejected: %v", template, err)
+		}
+	}
+	for _, template := range []string{"{id}", "D.{id}", "app", "1.{id}", "app.{id}."} {
+		if err := ValidateEntryPrefixTemplate(template); err == nil {
+			t.Fatalf("unsafe template %q accepted", template)
+		}
+	}
+	got, err := RenderAppNameTemplate("{id}.dkfn", "blinko")
+	if err != nil || got != "blinko.dkfn" {
+		t.Fatalf("rendered prefix=%q err=%v", got, err)
+	}
+}
+
+func TestSuggestEntryIDNormalizesChineseEnglishAndSymbols(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"飞牛应用坞":               "fei-niu-ying-yong-wu",
+		"Blinko Notes":        "blinko-notes",
+		"1Panel 2 / 管理面板":     "app-1panel-2-guan-li-mian",
+		"  Hello___WORLD!!  ": "hello-world",
+		"🎵":                   "",
+	}
+	for input, want := range tests {
+		if got := SuggestEntryID(input); got != want {
+			t.Fatalf("SuggestEntryID(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestDefaultSettingsAreValid(t *testing.T) {
+	t.Parallel()
+	settings := DefaultSettings()
+	if err := ValidateSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.EntryPrefixTemplate != "dkfn.{id}" || settings.DefaultOpenType != "url" ||
+		settings.DefaultAllUsers || !settings.AutoScanOnCreate || !settings.ShowDockFNBadge {
+		t.Fatalf("unexpected defaults: %#v", settings)
 	}
 }
 
 func TestOwnedAppNameRejectsExternalNames(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"d012345abcdef.dkfn", "blinko-notes.dkfn"} {
+	for _, name := range []string{"dkfn.d012345abcdef", "blinko-notes.dkfn", "app-blinko"} {
 		if !IsOwnedAppName(name) {
 			t.Fatalf("expected %s to be manageable", name)
 		}
 	}
-	for _, name := range []string{"012345abcdef.dkfn", "watchcow.demo", "other.app", "dockfn.legacy"} {
+	for _, name := range []string{"012345abcdef.dkfn", "Bad.App", "bad/name", "app..demo", strings.Repeat("a", 64)} {
 		if IsOwnedAppName(name) {
 			t.Fatalf("expected %s to be rejected", name)
 		}
