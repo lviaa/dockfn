@@ -55,6 +55,10 @@ type Platform interface {
 
 type Probe func(context.Context, uint16) error
 
+type SettingsReader interface {
+	Get(context.Context) (Settings, error)
+}
+
 type Service struct {
 	Repo         Repository
 	Builder      Builder
@@ -63,6 +67,7 @@ type Service struct {
 	DataDir      string
 	StagingDir   string
 	Probe        Probe
+	Settings     SettingsReader
 	NewID        func() (string, error)
 	ProbeTimeout time.Duration
 	mu           sync.Mutex
@@ -76,27 +81,33 @@ func (s *Service) Create(ctx context.Context, input Input) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	appName, err := NewAppName(id, input.EntryPrefix)
+	settings, err := s.settings(ctx)
+	if err != nil {
+		return View{}, err
+	}
+	identity, err := ResolveIdentity(id, settings.EntryPrefixTemplate, input.EntryPrefix, input.DisplayName)
 	if err != nil {
 		return View{}, &ValidationError{Fields: []FieldError{{
 			Field: "entryPrefix", Message: err.Error(),
 		}}}
 	}
-	if err = s.ensureAppNameAvailable(ctx, appName, ""); err != nil {
+	if err = s.ensureAppNameAvailable(ctx, identity.AppName, ""); err != nil {
 		return View{}, err
 	}
 	spec := AppSpec{
-		ID:          id,
-		AppName:     appName,
-		DisplayName: strings.TrimSpace(input.DisplayName),
-		Description: strings.TrimSpace(input.Description),
-		Origin:      normalizeOrigin(input.Origin),
-		OpenType:    NormalizeOpenType(input.OpenType),
-		Protocol:    strings.ToLower(strings.TrimSpace(input.Protocol)),
-		Port:        input.Port,
-		Path:        normalizedInputPath(input.Path),
-		AllUsers:    input.AllUsers,
-		Revision:    1,
+		ID:              id,
+		AppName:         identity.AppName,
+		EntryID:         identity.EntryID,
+		DisplayName:     strings.TrimSpace(input.DisplayName),
+		Description:     strings.TrimSpace(input.Description),
+		ShowDockFNBadge: Bool(settings.ShowDockFNBadge),
+		Origin:          normalizeOrigin(input.Origin),
+		OpenType:        NormalizeOpenType(firstNonEmpty(input.OpenType, settings.DefaultOpenType)),
+		Protocol:        strings.ToLower(strings.TrimSpace(input.Protocol)),
+		Port:            input.Port,
+		Path:            normalizedInputPath(input.Path),
+		AllUsers:        input.AllUsers,
+		Revision:        1,
 	}
 	var createdIcon string
 	spec.IconPath, _, err = s.resolveIcon(input, "")
@@ -145,22 +156,33 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (View, err
 	if err != nil {
 		return View{}, err
 	}
-	if strings.TrimSpace(input.EntryPrefix) != "" {
-		requestedName, nameErr := NewAppName(current.ID, input.EntryPrefix)
-		if nameErr != nil {
+	currentEntryID := EffectiveEntryID(current)
+	requestedEntryID := strings.TrimSpace(input.EntryPrefix)
+	if requestedEntryID == "" {
+		requestedEntryID = currentEntryID
+	}
+	settings, settingsErr := s.settings(ctx)
+	if settingsErr != nil {
+		return View{}, settingsErr
+	}
+	var requestedIdentity Identity
+	if requestedEntryID != currentEntryID {
+		requestedIdentity, err = ResolveIdentity(current.ID, settings.EntryPrefixTemplate, requestedEntryID, input.DisplayName)
+		if err != nil {
 			return View{}, &ValidationError{Fields: []FieldError{{
-				Field: "entryPrefix", Message: nameErr.Error(),
+				Field: "entryPrefix", Message: err.Error(),
 			}}}
 		}
-		if requestedName != current.AppName {
-			if nameErr = s.ensureAppNameAvailable(ctx, requestedName, current.ID); nameErr != nil {
-				return View{}, nameErr
-			}
+		if err = s.ensureAppNameAvailable(ctx, requestedIdentity.AppName, current.ID); err != nil {
+			return View{}, err
 		}
 	}
 	next := current
-	if strings.TrimSpace(input.EntryPrefix) != "" {
-		next.AppName, _ = NewAppName(current.ID, input.EntryPrefix)
+	next.EntryID = currentEntryID
+	next.ShowDockFNBadge = Bool(settings.ShowDockFNBadge)
+	if requestedEntryID != currentEntryID {
+		next.AppName = requestedIdentity.AppName
+		next.EntryID = requestedIdentity.EntryID
 	}
 	next.DisplayName = strings.TrimSpace(input.DisplayName)
 	next.Description = strings.TrimSpace(input.Description)
@@ -186,6 +208,31 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (View, err
 	return s.applyUpdate(ctx, current, next, "update")
 }
 
+func (s *Service) SuggestIdentity(ctx context.Context, displayName string) (Identity, error) {
+	entryID := SuggestEntryID(displayName)
+	if entryID == "" {
+		return Identity{}, &ValidationError{Fields: []FieldError{{
+			Field: "displayName", Message: "does not contain letters, numbers, or supported Chinese characters",
+		}}}
+	}
+	settings, err := s.settings(ctx)
+	if err != nil {
+		return Identity{}, err
+	}
+	appName, err := RenderAppNameTemplate(settings.EntryPrefixTemplate, entryID)
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{EntryID: entryID, AppName: appName}, nil
+}
+
+func (s *Service) settings(ctx context.Context) (Settings, error) {
+	if s.Settings == nil {
+		return DefaultSettings(), nil
+	}
+	return s.Settings.Get(ctx)
+}
+
 func normalizeOrigin(input *Origin) *Origin {
 	if input == nil || strings.TrimSpace(input.Source) == "" {
 		return &Origin{Source: "manual"}
@@ -204,6 +251,15 @@ func normalizeOrigin(input *Origin) *Origin {
 	return origin
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (s *Service) Repair(ctx context.Context, id string) (View, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -217,6 +273,26 @@ func (s *Service) Repair(ctx context.Context, id string) (View, error) {
 		_ = s.Repo.SetLastError(ctx, id, err.Error())
 		return View{}, fmt.Errorf("%w: %v", ErrTargetOffline, err)
 	}
+	return s.applyUpdate(ctx, current, next, "update")
+}
+
+// RefreshIcon rebuilds and reinstalls the current registration shell with the
+// global badge preference. It deliberately does not probe the target service:
+// changing a desktop icon must not require the existing Web service to be up.
+func (s *Service) RefreshIcon(ctx context.Context, id string) (View, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.Repo.Get(ctx, id)
+	if err != nil {
+		return View{}, err
+	}
+	settings, err := s.settings(ctx)
+	if err != nil {
+		return View{}, err
+	}
+	next := current
+	next.ShowDockFNBadge = Bool(settings.ShowDockFNBadge)
+	next.Revision++
 	return s.applyUpdate(ctx, current, next, "update")
 }
 
@@ -236,6 +312,7 @@ func (s *Service) Rollback(ctx context.Context, id string) (View, error) {
 	}
 	previous.ID = current.ID
 	previous.AppName = current.AppName
+	previous.EntryID = current.EntryID
 	previous.Revision = current.Revision + 1
 	if err = Validate(previous); err != nil {
 		return View{}, err
@@ -342,7 +419,7 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if !IsOwnedAppName(spec.AppName) {
+	if !IsManagedSpec(spec) {
 		return errors.New("refusing to remove a registration not owned by DockFN")
 	}
 	if err = s.Platform.Remove(ctx, spec); err != nil {

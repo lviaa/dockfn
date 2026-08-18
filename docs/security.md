@@ -16,7 +16,7 @@
 - `discovery`（只读）
 - `diagnostics`（只清空固定的 DockFN 诊断白名单）
 
-请求只接受固定 JSON 字段；不接受命令、环境变量或绝对路径。install/update 的源目录必须是 staging 的后代，且通过登记壳所有权、manifest、AppSpec、普通文件和无符号链接校验。remove/update 必须已有 DockFN ownership 收据；install 只接受 `<LaunchID>.dkfn` 安全格式，并拒绝与应用中心已有 appname 冲突。
+请求只接受固定 JSON 字段；不接受命令、环境变量或绝对路径。install/update 的源目录必须是 staging 的后代，且通过登记壳所有权、manifest、AppSpec、普通文件和无符号链接校验。remove/update 必须已有 DockFN ownership 收据；install 只接受由完整模板生成的安全小写 fnOS ID，并拒绝与应用中心已有 appname 冲突。
 
 `discovery` 固定只允许 `appcenter-cli list --json`、`docker ps --quiet`、`docker inspect <container-id>` 和 `ss -H -ltnp`。`ss` 只会从 `/usr/bin`、`/usr/sbin`、`/bin`、`/sbin` 四个固定系统路径中选择，不接受外部命令路径。监听结果仅保留原生 IPv4 和可通过 IPv4 探测成功的双栈通配端口；具体 IPv6 地址及 IPv6-only 监听不进入候选。Docker 绑定同样只接受 IPv4 发布地址。它还只读应用中心返回的受约束安装目录下 `ui/config`、监听 PID 的 `/proc/<pid>/cgroup` 和 PID namespace 链接，用于端口重复匹配及 host 网络容器归属；解析前会校验安装根目录。它不接受 Docker 命令、镜像名、容器名或任意路径输入，也绝不执行 Docker 生命周期操作。helper 子命令使用固定 PATH/LANG、固定 fnpack/appcenter-cli 参数、45 秒默认超时和 64 KiB 脱敏输出上限。
 
@@ -27,7 +27,7 @@
 ## 输入与文件
 
 - ID 固定为 12 位小写十六进制。
-- appname 只允许 `<LaunchID>.dkfn`；Launch ID 只允许 1–27 位 ASCII 小写字母、数字和内部连字符，必须以字母开头，使完整 appname 不超过 fnOS 的 32 字符限制。内部 12 位 ID 不可变，自动 Launch ID 为 `d<ID>`。Launch ID 变更必须走安装新壳、验证、移除旧壳和失败补偿流程。
+- 应用 ID 只允许 1–27 位 ASCII 小写字母、数字和内部连字符并以字母开头；完整 fnOS ID 模板必须包含一个 `{id}` 和至少一个固定标识，渲染结果必须以字母开头、使用安全的点分小写标签且不超过 63 位。应用名称转拼音只生成建议值，服务端仍对建议、手工值和最终完整 ID 分别校验。应用 ID 变更必须走安装新壳、验证、移除旧壳和失败补偿流程。
 - 协议只允许 HTTP/HTTPS，端口为 1–65535。
 - path 必须以 `/` 开头，拒绝反斜线、查询串、片段、空段和编码后的 `.`/`..`。
 - 图标只允许 PNG/JPEG/ICO，编码前最大 2 MiB，解码尺寸最大 4096×4096；接收到的大图会在保存前缩放为 64×64 和 256×256。ICO 只接受 PNG 封装或常见未压缩 24/32 位 DIB；SVG 只作为发现路径提示，不在服务端执行脚本或渲染，需转换后手动上传。浏览器没有提供 MIME 类型时可使用通用二进制 data URL，但后端始终以实际图片内容解码结果为准，不信任扩展名或 MIME 声明。
@@ -35,6 +35,7 @@
 - 服务扫描只从已读取根页记录同源 `link` 图标提示，不发起图标请求。管理员选择候选后，核对页才通过受认证的预览接口依次验证该提示和固定常见路径；每次请求有短超时，不访问脚本、manifest、子页面或凭据，并拒绝返回 SPA HTML 的伪 favicon。
 - 核对页修改访问路径后，图标发现接口只读取 `127.0.0.1:<目标端口><访问路径>`，不接受主机参数、认证信息或跨源重定向；页面最多读取 64 KiB，仅采用同协议、同主机的 `link` 图标，再按既有图片下载和内容校验规则生成预览。若页面提示不可用，有限回退路径覆盖 `/favicon.{ico,png,jpg,jpeg,svg}`、`/public/favicon.{ico,png,jpg,jpeg,svg}` 和 `/logo.{ico,png,jpg,jpeg,svg}`。手动图标状态始终优先，不会被异步发现结果覆盖。
 - AppSpec 写入采用同目录临时文件、fsync 和原子 rename。
+- 全局配置通过管理员接口整份替换并原子写入 `settings.json`；创建模块直接读取该配置，应用创建请求不能携带或覆盖全局模板。
 - 产品说明允许为空，但生成 fnOS manifest 时仅以已验证的显示名称补齐 `desc`；两者都经过控制字符和长度校验，不接受原始 manifest 文本。
 - 日志不输出 Cookie、Token、Authorization、密码或 URL 凭据。
 

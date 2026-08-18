@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import dockfnLogo from './assets/dockfn-logo.png'
 import {
   APIError,
@@ -9,7 +9,9 @@ import {
   type AppOrigin,
   type AppView,
   type Diagnostics,
+  type DockFNSettings,
   type DiscoveryCandidate,
+  type IdentitySuggestion,
   type OperationResult,
 } from './api/client'
 
@@ -19,6 +21,7 @@ type DiscoverySourceGroup = 'docker' | 'docker-host' | 'host' | 'ignored'
 type IconDiscoveryStatus = '' | 'loading' | 'found' | 'missing'
 
 const ignoredCandidatesStorageKey = 'dockfn.discovery.ignored.v1'
+const hideInstalledCandidatesStorageKey = 'dockfn.discovery.hide-installed.v1'
 const maxPersistedIgnoredCandidates = 500
 
 const commonCandidateIconURIs = [
@@ -34,6 +37,8 @@ const apps = ref<AppView[]>([])
 const candidates = ref<DiscoveryCandidate[]>([])
 const diagnostics = ref<Diagnostics | null>(null)
 const loading = ref(true)
+const diagnosticsLoading = ref(false)
+const diagnosticsError = ref('')
 const scanning = ref(false)
 const scanCompleted = ref(false)
 const busy = ref('')
@@ -41,24 +46,44 @@ const error = ref('')
 const search = ref('')
 const creatorOpen = ref(false)
 const diagnosticsOpen = ref(false)
+const settingsOpen = ref(false)
+const settingsSaving = ref(false)
+const settingsError = ref('')
+const settingsSavedOpen = ref(false)
 const selectedDiagnostic = ref<DiagnosticItem | null>(null)
 const diagnosticNotice = ref('')
 const pendingDiagnosticsClear = ref(false)
 const creatorStep = ref<CreatorStep>('discover')
 const collapsedDiscoveryGroups = ref<Set<string>>(new Set(['ignored']))
-const hideInstalledCandidates = ref(true)
+const hideInstalledCandidates = ref(readHideInstalledCandidates())
 const ignoredCandidateKeys = ref<Set<string>>(readIgnoredCandidateKeys())
 const editing = ref<AppView | null>(null)
 const completedApp = ref<AppView | null>(null)
 const selectedCandidate = ref<DiscoveryCandidate | null>(null)
 const pendingRemoval = ref<AppView | null>(null)
+const pendingIconSync = ref<AppView | null>(null)
+const iconSyncCompleted = ref<AppView | null>(null)
 const iconPreview = ref('')
 const iconChanged = ref(false)
 const iconManuallyEdited = ref(false)
 const iconDiscoveryStatus = ref<IconDiscoveryStatus>('')
+const entryIDManuallyEdited = ref(false)
+const defaultSettings: DockFNSettings = {
+  entryPrefixTemplate: 'dkfn.{id}',
+  defaultOpenType: 'url',
+  defaultAllUsers: false,
+  autoScanOnCreate: true,
+  showDockFNBadge: true,
+}
+const settings = reactive<DockFNSettings>({ ...defaultSettings })
+const settingsDraft = reactive<DockFNSettings>({ ...defaultSettings })
 let iconPreviewSequence = 0
 let discoverySequence = 0
+let diagnosticsRequestSequence = 0
+let diagnosticsAbortController: AbortController | undefined
 let pathIconTimer: ReturnType<typeof setTimeout> | undefined
+let entryIDSuggestionTimer: ReturnType<typeof setTimeout> | undefined
+let entryIDSuggestionSequence = 0
 
 function readIgnoredCandidateKeys() {
   if (typeof window === 'undefined') return new Set<string>()
@@ -75,6 +100,24 @@ function readIgnoredCandidateKeys() {
     )
   } catch {
     return new Set<string>()
+  }
+}
+
+function readHideInstalledCandidates() {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(hideInstalledCandidatesStorageKey) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function persistHideInstalledCandidates(value: boolean) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(hideInstalledCandidatesStorageKey, String(value))
+  } catch {
+    // Private browsing or a full storage quota should not disable discovery.
   }
 }
 
@@ -105,6 +148,8 @@ function setIgnoredCandidateKeys(keys: Set<string>) {
     // is still serving the page during an upgrade.
   })
 }
+
+watch(hideInstalledCandidates, persistHideInstalledCandidates)
 
 const form = reactive<AppInput>({
   displayName: '',
@@ -189,16 +234,25 @@ const groupedCandidates = computed(() => {
 })
 
 const diagnosticItems = computed(() =>
-  diagnostics.value ? [...diagnostics.value.logs, ...(diagnostics.value.reports || [])] : [],
+  diagnostics.value
+    ? [...(diagnostics.value.reports || []), ...(diagnostics.value.logs || [])]
+    : [],
 )
+
+function diagnosticTitle(name: string) {
+  const titles: Record<string, string> = {
+    'last-discovery.json': '最近扫描',
+    'last-install-failure.json': '最近安装失败',
+    'runtime.log': '运行日志',
+  }
+  return titles[name] || name
+}
 
 function diagnosticDescription(name: string) {
   const descriptions: Record<string, string> = {
-    'server.log': '管理服务运行日志',
-    'helper.log': '权限助手与 fnOS 操作日志',
-    'lifecycle.log': '应用生命周期日志',
-    'last-discovery.json': '最近一次服务扫描快照',
+    'last-discovery.json': '最近一次服务扫描结果',
     'last-install-failure.json': '最近一次安装失败诊断',
+    'runtime.log': '管理服务与权限助手的最近输出',
   }
   return descriptions[name] || 'DockFN 诊断记录'
 }
@@ -210,25 +264,110 @@ const entryPrefixValid = computed(() => {
 
 const entryNamePreview = computed(() => {
   const prefix = normalizedEntryPrefix(form.entryPrefix)
-  if (!prefix) return '<自动 ID>.dkfn'
-  return entryPrefixValid.value ? `${prefix}.dkfn` : '<无效 ID>'
+  if (!prefix) return settings.entryPrefixTemplate.replace('{id}', '<应用 ID>')
+  return entryPrefixValid.value ? settings.entryPrefixTemplate.replace('{id}', prefix) : '<无效 ID>'
 })
+
+const entryRulePreview = computed(() =>
+  entryIDManuallyEdited.value ? '当前值由你手动指定' : '当前值根据应用名称自动生成',
+)
+
+const settingsTemplateError = computed(() =>
+  validateEntryTemplate(settingsDraft.entryPrefixTemplate),
+)
+const settingsTemplatePreview = computed(() => {
+  if (settingsTemplateError.value) return '—'
+  return settingsDraft.entryPrefixTemplate.trim().replace('{id}', 'entry-7f3a2c')
+})
+
+function validateEntryTemplate(value: string) {
+  const template = value.trim()
+  if (!template) return '请输入 fnID 模板'
+  if ((template.match(/\{id\}/g) || []).length !== 1) return '模板必须且只能包含一个 {id}'
+  const marker = template.replace('{id}', '')
+  if (!/[a-z0-9]/.test(marker)) return '模板不能仅包含 {id}，请增加固定标识'
+  if (!/^[a-z0-9.-]*$/.test(marker)) return '模板只能包含小写字母、数字、点、连字符和 {id}'
+  for (const id of ['app', 'a'.repeat(27)]) {
+    const result = template.replace('{id}', id)
+    if (
+      result.length > 63 ||
+      !/^[a-z](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(result)
+    ) {
+      return '模板生成的完整 fnOS ID 必须以字母开头、使用安全的小写分段且不超过 63 位'
+    }
+  }
+  return ''
+}
 
 function normalizedEntryPrefix(value?: string) {
   return value?.trim() || ''
 }
 
-function entryPrefix(appName: string) {
-  if (appName.endsWith('.dkfn')) return appName.slice(0, -'.dkfn'.length)
+function clearEntryIDSuggestionTimer() {
+  if (entryIDSuggestionTimer) clearTimeout(entryIDSuggestionTimer)
+  entryIDSuggestionTimer = undefined
+}
+
+function scheduleEntryIDSuggestion() {
+  clearEntryIDSuggestionTimer()
+  if (editing.value || entryIDManuallyEdited.value) return
+  const displayName = form.displayName.trim()
+  if (!displayName) {
+    form.entryPrefix = ''
+    return
+  }
+  entryIDSuggestionTimer = setTimeout(() => void suggestEntryID(displayName), 300)
+}
+
+async function suggestEntryID(displayName: string) {
+  if (editing.value || entryIDManuallyEdited.value || !displayName.trim()) return
+  const sequence = ++entryIDSuggestionSequence
+  try {
+    const suggestion = await request<IdentitySuggestion>('/entry-ids/suggest', {
+      method: 'POST',
+      body: JSON.stringify({ displayName }),
+    })
+    if (
+      sequence === entryIDSuggestionSequence &&
+      !entryIDManuallyEdited.value &&
+      form.displayName.trim() === displayName.trim()
+    ) {
+      form.entryPrefix = suggestion.entryId
+    }
+  } catch {
+    // Suggestions are advisory. Creation can still use the stable internal-ID
+    // fallback when a display name cannot be transliterated.
+  }
+}
+
+function onEntryIDInput() {
+  clearEntryIDSuggestionTimer()
+  entryIDSuggestionSequence += 1
+  entryIDManuallyEdited.value = true
+}
+
+function entryPrefix(item: AppView) {
+  if (item.entryId) return item.entryId
+  if (item.appName.endsWith('.dkfn')) return item.appName.slice(0, -'.dkfn'.length)
   return ''
 }
+
+function appShowsBadge(item?: Pick<AppView, 'showDockFNBadge'> | null) {
+  return item?.showDockFNBadge !== false
+}
+
+const formShowsBadge = computed(() => settings.showDockFNBadge)
 
 async function loadApps() {
   loading.value = true
   error.value = ''
   try {
-    const response = await request<{ items: AppView[] }>('/apps')
+    const response = await request<{ items: AppView[]; settings?: DockFNSettings }>('/apps')
     apps.value = response.items
+    if (response.settings) {
+      Object.assign(settings, response.settings)
+      Object.assign(settingsDraft, response.settings)
+    }
   } catch (reason) {
     showError(reason)
   } finally {
@@ -236,18 +375,54 @@ async function loadApps() {
   }
 }
 
+async function openSettings() {
+  settingsOpen.value = true
+  settingsSavedOpen.value = false
+  settingsError.value = ''
+  Object.assign(settingsDraft, settings)
+  try {
+    const response = await request<DockFNSettings>('/settings')
+    Object.assign(settings, response)
+    Object.assign(settingsDraft, response)
+  } catch (reason) {
+    settingsError.value = reason instanceof Error ? reason.message : '无法读取全局配置'
+  }
+}
+
+async function saveSettings() {
+  if (settingsTemplateError.value) return
+  settingsSaving.value = true
+  settingsError.value = ''
+  try {
+    const response = await request<DockFNSettings>('/settings', {
+      method: 'PUT',
+      body: JSON.stringify(settingsDraft),
+    })
+    Object.assign(settings, response)
+    Object.assign(settingsDraft, response)
+    settingsOpen.value = false
+    settingsSavedOpen.value = true
+  } catch (reason) {
+    settingsError.value = reason instanceof Error ? reason.message : '保存全局配置失败'
+  } finally {
+    settingsSaving.value = false
+  }
+}
+
 function resetForm() {
   clearPathIconTimer()
+  clearEntryIDSuggestionTimer()
   iconPreviewSequence += 1
+  entryIDSuggestionSequence += 1
   Object.assign(form, {
     displayName: '',
     description: '',
     entryPrefix: '',
-    openType: 'url',
+    openType: settings.defaultOpenType,
     protocol: 'http',
     port: 8080,
     path: '/',
-    allUsers: false,
+    allUsers: settings.defaultAllUsers,
     origin: { source: 'manual' },
     iconBase64: undefined,
     iconUri: undefined,
@@ -256,6 +431,7 @@ function resetForm() {
   iconChanged.value = false
   iconManuallyEdited.value = false
   iconDiscoveryStatus.value = ''
+  entryIDManuallyEdited.value = false
 }
 
 function beginCreate() {
@@ -270,7 +446,7 @@ function beginCreate() {
   resetForm()
   error.value = ''
   creatorOpen.value = true
-  void scanServices()
+  if (settings.autoScanOnCreate) void scanServices()
 }
 
 function beginManualCreate() {
@@ -290,7 +466,7 @@ function beginEdit(item: AppView) {
   Object.assign(form, {
     displayName: item.displayName,
     description: item.description || '',
-    entryPrefix: entryPrefix(item.appName),
+    entryPrefix: entryPrefix(item),
     openType: item.openType || 'url',
     protocol: item.protocol,
     port: item.port,
@@ -302,6 +478,7 @@ function beginEdit(item: AppView) {
   })
   iconPreview.value = item.iconDataUrl || ''
   iconChanged.value = false
+  entryIDManuallyEdited.value = true
   error.value = ''
   creatorOpen.value = true
 }
@@ -348,11 +525,11 @@ function selectCandidate(candidate: DiscoveryCandidate) {
     displayName: candidate.displayName,
     description: '',
     entryPrefix: '',
-    openType: 'url',
+    openType: settings.defaultOpenType,
     protocol: candidate.protocol,
     port: candidate.port,
     path: candidate.path,
-    allUsers: false,
+    allUsers: settings.defaultAllUsers,
     origin: {
       source: candidate.source,
       sourceDetail: candidate.sourceDetail,
@@ -368,7 +545,9 @@ function selectCandidate(candidate: DiscoveryCandidate) {
   iconChanged.value = false
   iconManuallyEdited.value = false
   iconDiscoveryStatus.value = ''
+  entryIDManuallyEdited.value = false
   creatorStep.value = 'review'
+  void suggestEntryID(candidate.displayName)
   void discoverCandidateIcon(candidate)
 }
 
@@ -551,6 +730,8 @@ async function previewIconURI(value?: string) {
 
 async function submit() {
   const creating = !editing.value
+  clearEntryIDSuggestionTimer()
+  entryIDSuggestionSequence += 1
   busy.value = 'submit'
   error.value = ''
   try {
@@ -584,18 +765,44 @@ async function submit() {
   }
 }
 
-async function runAction(item: AppView, action: 'check' | 'repair' | 'rollback') {
+function beginIconSync(item: AppView) {
+  error.value = ''
+  iconSyncCompleted.value = null
+  pendingIconSync.value = item
+}
+
+async function syncDesktopIconConfirmed() {
+  const item = pendingIconSync.value
+  if (!item) return
+  busy.value = `${item.id}:refresh-icon`
+  error.value = ''
+  try {
+    const response = await request<OperationResult>(`/apps/${item.id}/refresh-icon`, {
+      method: 'POST',
+    })
+    replaceApp(response.app)
+    iconSyncCompleted.value = response.app
+  } catch (reason) {
+    showError(reason)
+  } finally {
+    busy.value = ''
+  }
+}
+
+function closeIconSync() {
+  if (busy.value) return
+  pendingIconSync.value = null
+  iconSyncCompleted.value = null
+}
+
+async function runAction(item: AppView, action: 'repair' | 'rollback') {
   busy.value = `${item.id}:${action}`
   error.value = ''
   try {
-    if (action === 'check') {
-      replaceApp(await request<AppView>(`/apps/${item.id}/check`, { method: 'POST' }))
-    } else {
-      const response = await request<OperationResult>(`/apps/${item.id}/${action}`, {
-        method: 'POST',
-      })
-      replaceApp(response.app)
-    }
+    const response = await request<OperationResult>(`/apps/${item.id}/${action}`, {
+      method: 'POST',
+    })
+    replaceApp(response.app)
   } catch (reason) {
     showError(reason)
   } finally {
@@ -620,18 +827,42 @@ async function removeConfirmed() {
 }
 
 async function openDiagnostics() {
+  diagnosticsRequestSequence += 1
+  const sequence = diagnosticsRequestSequence
+  diagnosticsAbortController?.abort()
+  const controller = new AbortController()
+  diagnosticsAbortController = controller
+  const timeout = setTimeout(() => controller.abort(), 15_000)
   diagnosticsOpen.value = true
   selectedDiagnostic.value = null
   diagnosticNotice.value = ''
+  diagnosticsError.value = ''
   diagnostics.value = null
+  diagnosticsLoading.value = true
   try {
-    diagnostics.value = await request<Diagnostics>('/system/diagnostics')
+    const result = await request<Diagnostics>('/system/diagnostics', { signal: controller.signal })
+    if (sequence === diagnosticsRequestSequence) diagnostics.value = result
   } catch (reason) {
-    showError(reason)
+    if (sequence !== diagnosticsRequestSequence) return
+    diagnosticsError.value =
+      reason instanceof DOMException && reason.name === 'AbortError'
+        ? '诊断信息读取超时，请确认 DockFN 服务正在运行后重试。'
+        : errorMessage(reason)
+  } finally {
+    clearTimeout(timeout)
+    if (sequence === diagnosticsRequestSequence) {
+      diagnosticsLoading.value = false
+      diagnosticsAbortController = undefined
+    }
   }
 }
 
 function closeDiagnostics() {
+  diagnosticsRequestSequence += 1
+  diagnosticsAbortController?.abort()
+  diagnosticsAbortController = undefined
+  diagnosticsLoading.value = false
+  diagnosticsError.value = ''
   selectedDiagnostic.value = null
   pendingDiagnosticsClear.value = false
   diagnosticsOpen.value = false
@@ -680,7 +911,7 @@ async function copyDiagnostic(item: DiagnosticItem) {
       return
     }
   }
-  diagnosticNotice.value = `${item.name} 已复制。`
+  diagnosticNotice.value = `${diagnosticTitle(item.name)} 已复制。`
 }
 
 function replaceApp(item: AppView) {
@@ -765,16 +996,18 @@ function suggestionLabel(candidate: DiscoveryCandidate) {
   return '可创建'
 }
 
-function showError(reason: unknown) {
+function errorMessage(reason: unknown) {
   if (reason instanceof APIError) {
     if (reason.code === 'FNOS_OPERATION_FAILED') {
-      error.value = 'fnOS 应用登记未完成。DockFN 已保留安装诊断；请打开“诊断”查看详情后重试。'
-      return
+      return 'fnOS 应用登记未完成。DockFN 已保留安装诊断；请打开“诊断”查看详情后重试。'
     }
-    error.value = `${reason.message}${reason.suggestion ? ` ${reason.suggestion}` : ''}`
-  } else {
-    error.value = reason instanceof Error ? reason.message : '操作失败，请稍后重试。'
+    return `${reason.message}${reason.suggestion ? ` ${reason.suggestion}` : ''}`
   }
+  return reason instanceof Error ? reason.message : '操作失败，请稍后重试。'
+}
+
+function showError(reason: unknown) {
+  error.value = errorMessage(reason)
 }
 
 function readDataURL(file: File): Promise<string> {
@@ -787,7 +1020,11 @@ function readDataURL(file: File): Promise<string> {
 }
 
 onMounted(loadApps)
-onBeforeUnmount(clearPathIconTimer)
+onBeforeUnmount(() => {
+  diagnosticsAbortController?.abort()
+  clearPathIconTimer()
+  clearEntryIDSuggestionTimer()
+})
 </script>
 
 <template>
@@ -802,6 +1039,16 @@ onBeforeUnmount(clearPathIconTimer)
           </div>
         </div>
         <div class="topbar-actions">
+          <button
+            class="quiet-button"
+            type="button"
+            aria-label="打开全局配置"
+            title="全局配置"
+            @click="openSettings"
+          >
+            <Icon icon="solar:settings-linear" aria-hidden="true" />
+            <span>配置</span>
+          </button>
           <button class="quiet-button" type="button" aria-label="打开诊断" @click="openDiagnostics">
             <Icon icon="solar:health-linear" aria-hidden="true" />
             <span>诊断</span>
@@ -829,7 +1076,7 @@ onBeforeUnmount(clearPathIconTimer)
         <div v-if="error" class="message error" role="alert">
           <Icon icon="solar:danger-triangle-linear" aria-hidden="true" />
           <span>{{ error }}</span>
-          <button type="button" aria-label="关闭错误" @click="error = ''">
+          <button type="button" aria-label="关闭错误" title="关闭错误" @click="error = ''">
             <Icon icon="solar:close-circle-linear" />
           </button>
         </div>
@@ -855,6 +1102,7 @@ onBeforeUnmount(clearPathIconTimer)
                 :alt="`${item.displayName} 图标`"
               />
               <img
+                v-if="appShowsBadge(item)"
                 class="dockfn-badge"
                 :src="dockfnLogo"
                 alt="由 DockFN 创建"
@@ -914,8 +1162,9 @@ onBeforeUnmount(clearPathIconTimer)
                 class="icon-action"
                 type="button"
                 :disabled="!!busy"
-                aria-label="检测登记壳"
-                @click="runAction(item, 'check')"
+                aria-label="同步桌面图标"
+                title="同步桌面图标"
+                @click="beginIconSync(item)"
               >
                 <Icon icon="solar:refresh-linear" />
               </button>
@@ -924,6 +1173,7 @@ onBeforeUnmount(clearPathIconTimer)
                 type="button"
                 :disabled="!!busy"
                 aria-label="编辑应用"
+                title="编辑应用"
                 @click="beginEdit(item)"
               >
                 <Icon icon="solar:pen-linear" />
@@ -934,6 +1184,7 @@ onBeforeUnmount(clearPathIconTimer)
                 type="button"
                 :disabled="!!busy"
                 aria-label="修复登记壳"
+                title="修复登记壳"
                 @click="runAction(item, 'repair')"
               >
                 <Icon icon="solar:restart-linear" />
@@ -943,6 +1194,7 @@ onBeforeUnmount(clearPathIconTimer)
                 type="button"
                 :disabled="!!busy"
                 aria-label="移除应用入口"
+                title="移除应用入口"
                 @click="pendingRemoval = item"
               >
                 <Icon icon="solar:trash-bin-trash-linear" />
@@ -955,11 +1207,171 @@ onBeforeUnmount(clearPathIconTimer)
     </section>
 
     <Transition name="fade">
+      <div v-if="settingsOpen" class="overlay modal-overlay" @click.self="settingsOpen = false">
+        <section
+          class="settings-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-title"
+        >
+          <header class="dialog-head">
+            <div>
+              <h2 id="settings-title">全局配置</h2>
+            </div>
+            <button
+              class="icon-action"
+              type="button"
+              aria-label="关闭全局配置"
+              title="关闭"
+              :disabled="settingsSaving"
+              @click="settingsOpen = false"
+            >
+              <Icon icon="solar:close-circle-linear" />
+            </button>
+          </header>
+
+          <form class="settings-form" @submit.prevent="saveSettings">
+            <div v-if="settingsError" class="review-error" role="alert">
+              <Icon icon="solar:danger-triangle-linear" aria-hidden="true" />
+              <span>{{ settingsError }}</span>
+            </div>
+            <section class="settings-section" aria-labelledby="identity-settings-title">
+              <div class="settings-section-title">
+                <h3 id="identity-settings-title">入口标识</h3>
+                <span class="info-tip" tabindex="0" aria-label="fnID 模板说明">
+                  <Icon icon="solar:info-circle-linear" aria-hidden="true" />
+                  <span role="tooltip"
+                    >{id} 表示根据应用名称自动生成、且可在创建前修改的应用 ID。模板描述完整 fnOS
+                    ID，不会再自动追加后缀；修改模板不会重命名现有应用。</span
+                  >
+                </span>
+              </div>
+              <label class="settings-field">
+                <span>fnID 生成模板</span>
+                <input
+                  v-model="settingsDraft.entryPrefixTemplate"
+                  required
+                  maxlength="63"
+                  :aria-invalid="!!settingsTemplateError"
+                  placeholder="dkfn.{id}"
+                />
+                <small>填写完整模板，例如 <code>dkfn.{id}</code> 或 <code>{id}.dkfn</code></small>
+                <small v-if="settingsTemplateError" class="field-error">{{
+                  settingsTemplateError
+                }}</small>
+                <small v-else class="field-preview"
+                  >生成结果：<code>{{ settingsTemplatePreview }}</code></small
+                >
+              </label>
+            </section>
+
+            <section class="settings-section" aria-labelledby="create-defaults-title">
+              <div class="settings-section-title">
+                <h3 id="create-defaults-title">新增应用默认值</h3>
+                <span class="info-tip" tabindex="0" aria-label="新增应用默认值说明">
+                  <Icon icon="solar:info-circle-linear" aria-hidden="true" />
+                  <span role="tooltip">这些选项只作为新增表单的默认值，仍可在创建前单独修改。</span>
+                </span>
+              </div>
+              <fieldset class="settings-open-type">
+                <legend>默认打开方式</legend>
+                <div class="segmented-control" role="radiogroup" aria-label="默认打开方式">
+                  <button
+                    type="button"
+                    role="radio"
+                    :class="{ active: settingsDraft.defaultOpenType === 'url' }"
+                    :aria-checked="settingsDraft.defaultOpenType === 'url'"
+                    @click="settingsDraft.defaultOpenType = 'url'"
+                  >
+                    URL
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    :class="{ active: settingsDraft.defaultOpenType === 'iframe' }"
+                    :aria-checked="settingsDraft.defaultOpenType === 'iframe'"
+                    @click="settingsDraft.defaultOpenType = 'iframe'"
+                  >
+                    iframe
+                  </button>
+                </div>
+              </fieldset>
+              <label class="toggle-line compact-toggle">
+                <input v-model="settingsDraft.defaultAllUsers" type="checkbox" />
+                <span
+                  ><strong>默认所有用户可见</strong><small>关闭时默认仅管理员可见。</small></span
+                >
+              </label>
+              <label class="toggle-line compact-toggle">
+                <input v-model="settingsDraft.autoScanOnCreate" type="checkbox" />
+                <span
+                  ><strong>进入新增流程后自动扫描</strong
+                  ><small>关闭后可手动点击扫描。</small></span
+                >
+              </label>
+              <label class="toggle-line compact-toggle">
+                <input v-model="settingsDraft.showDockFNBadge" type="checkbox" />
+                <span
+                  ><strong>应用入口显示 DockFN 角标</strong
+                  ><small
+                    >新建或重新保存时采用此配置；桌面仍显示旧图标时，请清除浏览器图片缓存后刷新。</small
+                  ></span
+                >
+              </label>
+            </section>
+
+            <footer class="dialog-actions settings-actions">
+              <button
+                class="secondary-button"
+                type="button"
+                :disabled="settingsSaving"
+                @click="settingsOpen = false"
+              >
+                取消
+              </button>
+              <button
+                class="primary-button"
+                type="submit"
+                :disabled="settingsSaving || !!settingsTemplateError"
+              >
+                <Icon
+                  :class="{ loader: settingsSaving }"
+                  :icon="settingsSaving ? 'solar:refresh-linear' : 'solar:diskette-linear'"
+                  aria-hidden="true"
+                />{{ settingsSaving ? '保存中…' : '保存配置' }}
+              </button>
+            </footer>
+          </form>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
       <div
-        v-if="creatorOpen"
-        class="overlay creator-overlay"
-        @click.self="!busy && (creatorOpen = false)"
+        v-if="settingsSavedOpen"
+        class="overlay modal-overlay"
+        @click.self="settingsSavedOpen = false"
       >
+        <section
+          class="confirm-dialog settings-saved-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-saved-title"
+        >
+          <Icon class="success-icon" icon="solar:check-circle-linear" aria-hidden="true" />
+          <h2 id="settings-saved-title">配置已保存</h2>
+          <p>新配置将在以后创建应用时生效，已注册应用不会被自动重命名。</p>
+          <footer class="dialog-actions">
+            <button class="primary-button" type="button" @click="settingsSavedOpen = false">
+              确定
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div v-if="creatorOpen" class="overlay creator-overlay">
         <section
           class="creator-dialog"
           role="dialog"
@@ -999,6 +1411,7 @@ onBeforeUnmount(clearPathIconTimer)
               type="button"
               :disabled="!!busy"
               aria-label="关闭"
+              title="关闭"
               @click="creatorOpen = false"
             >
               <Icon icon="solar:close-circle-linear" />
@@ -1039,7 +1452,8 @@ onBeforeUnmount(clearPathIconTimer)
                   :disabled="scanning"
                   @click="scanServices"
                 >
-                  <Icon icon="solar:radar-2-linear" />{{
+                  <span v-if="scanning" class="discovery-spinner" aria-hidden="true"></span>
+                  <Icon v-else class="discovery-scan-icon" icon="solar:radar-2-linear" />{{
                     scanning ? '扫描中…' : scanCompleted ? '重新扫描' : '扫描本地服务'
                   }}
                 </button>
@@ -1221,7 +1635,8 @@ onBeforeUnmount(clearPathIconTimer)
                   v-model="form.displayName"
                   required
                   maxlength="80"
-                  placeholder="例如：家庭相册"
+                  placeholder="例如：本地服务"
+                  @input="scheduleEntryIDSuggestion"
               /></label>
               <label
                 ><span>访问路径</span
@@ -1237,16 +1652,25 @@ onBeforeUnmount(clearPathIconTimer)
                 ><input v-model="form.description" maxlength="500" placeholder="留空则使用显示名称"
               /></label>
               <label
-                ><span>fnOS 入口 ID</span
+                ><span class="field-label-with-info"
+                  >fnOS 入口 ID
+                  <span class="info-tip" tabindex="0" aria-label="fnID 创建规则说明">
+                    <Icon icon="solar:info-circle-linear" aria-hidden="true" />
+                    <span role="tooltip"
+                      >{{ entryRulePreview }}；支持中文转无声调拼音、英文小写化和特殊符号过滤。完整
+                      fnOS ID 按全局模板 {{ settings.entryPrefixTemplate }} 生成，最终访问域名仍由
+                      fnOS 管理。</span
+                    >
+                  </span></span
                 ><input
                   v-model="form.entryPrefix"
                   maxlength="27"
                   pattern="[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?"
                   :aria-invalid="!entryPrefixValid"
                   placeholder="留空则自动生成"
+                  @input="onEntryIDInput"
                 /><small class="field-help"
-                  >完整入口 ID：<code>{{ entryNamePreview }}</code
-                  >，创建后可修改。</small
+                  >应用标识：<code>{{ entryNamePreview }}</code></small
                 ></label
               >
               <fieldset class="open-type-field">
@@ -1290,6 +1714,7 @@ onBeforeUnmount(clearPathIconTimer)
             <div class="icon-source">
               <div class="icon-preview-wrap">
                 <img :src="iconPreview || dockfnLogo" alt="应用图标预览" /><img
+                  v-if="formShowsBadge"
                   class="dockfn-badge"
                   :src="dockfnLogo"
                   alt="DockFN 角标"
@@ -1381,7 +1806,7 @@ onBeforeUnmount(clearPathIconTimer)
           <section v-else class="completion-step" aria-live="polite">
             <div v-if="busy === 'submit'" class="completion-progress" role="status">
               <div class="completion-loader">
-                <Icon class="loader" icon="solar:refresh-linear" aria-hidden="true" />
+                <span class="completion-spinner" aria-hidden="true"></span>
                 <img :src="iconPreview || dockfnLogo" alt="" />
               </div>
               <p class="eyebrow">INSTALLING FNOS ENTRY</p>
@@ -1393,7 +1818,12 @@ onBeforeUnmount(clearPathIconTimer)
               <div class="completion-visual">
                 <div class="completion-icon-wrap">
                   <img :src="completedApp?.iconDataUrl || dockfnLogo" alt="" />
-                  <img class="dockfn-badge" :src="dockfnLogo" alt="DockFN 角标" />
+                  <img
+                    v-if="appShowsBadge(completedApp)"
+                    class="dockfn-badge"
+                    :src="dockfnLogo"
+                    alt="DockFN 角标"
+                  />
                 </div>
                 <Icon class="completion-check" icon="solar:check-circle-bold" aria-hidden="true" />
               </div>
@@ -1414,6 +1844,10 @@ onBeforeUnmount(clearPathIconTimer)
                     {{ completedApp.protocol.toUpperCase() }} · {{ completedApp.port
                     }}{{ completedApp.path }}
                   </dd>
+                </div>
+                <div>
+                  <dt>最终域名</dt>
+                  <dd>由 fnOS 生成，请以 fnOS 应用中心显示为准</dd>
                 </div>
               </dl>
               <footer class="completion-actions">
@@ -1441,6 +1875,73 @@ onBeforeUnmount(clearPathIconTimer)
     </Transition>
 
     <Transition name="fade">
+      <div v-if="pendingIconSync" class="overlay modal-overlay">
+        <section
+          class="confirm-dialog icon-sync-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="icon-sync-title"
+        >
+          <template v-if="busy === `${pendingIconSync.id}:refresh-icon`">
+            <Icon class="loader" icon="solar:refresh-linear" aria-hidden="true" />
+            <h2 id="icon-sync-title">正在同步桌面图标</h2>
+            <p>
+              正在重新生成并安装“{{ pendingIconSync.displayName }}”的 fnOS 应用入口，请勿关闭窗口。
+            </p>
+          </template>
+          <template v-else-if="iconSyncCompleted">
+            <Icon class="success-icon" icon="solar:check-circle-linear" aria-hidden="true" />
+            <h2 id="icon-sync-title">桌面入口已同步</h2>
+            <p>
+              fnOS
+              桌面图标可能会短暂刷新。若仍显示旧图标或暂未出现，请关闭并重新打开桌面；必要时刷新页面或清除图片缓存。
+            </p>
+          </template>
+          <template v-else>
+            <Icon class="warning-icon" icon="solar:refresh-circle-linear" aria-hidden="true" />
+            <h2 id="icon-sync-title">同步“{{ pendingIconSync.displayName }}”的桌面图标？</h2>
+            <p>
+              将按当前全局角标配置重新生成并安装 fnOS
+              应用入口。同步期间，桌面图标可能会短暂消失；不会操作目标服务、Docker
+              容器、存储卷或业务数据。
+            </p>
+          </template>
+          <div v-if="error" class="review-error icon-sync-error" role="alert">
+            <Icon icon="solar:danger-triangle-linear" aria-hidden="true" />
+            <span>{{ error }}</span>
+          </div>
+          <footer class="dialog-actions">
+            <button
+              v-if="!iconSyncCompleted"
+              class="secondary-button"
+              type="button"
+              :disabled="!!busy"
+              @click="closeIconSync"
+            >
+              取消
+            </button>
+            <button
+              v-if="!iconSyncCompleted && busy !== `${pendingIconSync.id}:refresh-icon`"
+              class="primary-button"
+              type="button"
+              @click="syncDesktopIconConfirmed"
+            >
+              <Icon icon="solar:refresh-linear" aria-hidden="true" />开始同步
+            </button>
+            <button
+              v-if="iconSyncCompleted"
+              class="primary-button"
+              type="button"
+              @click="closeIconSync"
+            >
+              完成
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
       <div v-if="diagnosticsOpen" class="overlay modal-overlay" @click.self="closeDiagnostics">
         <section
           class="diagnostics-dialog"
@@ -1450,7 +1951,6 @@ onBeforeUnmount(clearPathIconTimer)
         >
           <header class="dialog-head">
             <div>
-              <p class="eyebrow">SYSTEM DIAGNOSTICS</p>
               <h2 id="diagnostics-title">DockFN 诊断</h2>
             </div>
             <div class="diagnostics-head-actions">
@@ -1458,42 +1958,69 @@ onBeforeUnmount(clearPathIconTimer)
                 class="secondary-button diagnostics-clear-button"
                 type="button"
                 aria-label="清空诊断历史"
-                :disabled="!!busy || !diagnostics"
+                :disabled="!!busy || diagnosticItems.length === 0"
                 @click="pendingDiagnosticsClear = true"
               >
                 <Icon icon="solar:trash-bin-minimalistic-linear" />清空记录
               </button>
-              <button class="icon-action" type="button" aria-label="关闭" @click="closeDiagnostics">
+              <button
+                class="icon-action"
+                type="button"
+                aria-label="关闭"
+                title="关闭"
+                @click="closeDiagnostics"
+              >
                 <Icon icon="solar:close-circle-linear" />
               </button>
             </div>
           </header>
           <div class="diagnostics-summary">
-            <p>仅显示 DockFN 生命周期、服务和权限助手的最近日志；敏感字段已脱敏。</p>
+            <p>显示最近扫描、最近安装失败及有内容的运行日志；敏感字段已脱敏。</p>
             <div v-if="diagnosticNotice" class="diagnostic-notice" role="status">
               {{ diagnosticNotice }}
             </div>
           </div>
-          <div v-if="!diagnostics" class="diagnostics-loading">
+          <div v-if="diagnosticsLoading" class="diagnostics-loading">
             <Icon class="loader" icon="solar:refresh-linear" />正在读取诊断信息…
+          </div>
+          <div
+            v-else-if="diagnosticsError"
+            class="diagnostics-empty diagnostics-error"
+            role="alert"
+          >
+            <Icon icon="solar:danger-triangle-linear" aria-hidden="true" />
+            <span
+              ><strong>无法读取诊断信息</strong><small>{{ diagnosticsError }}</small></span
+            >
+            <button
+              class="secondary-button"
+              type="button"
+              data-diagnostics-action="retry"
+              @click="openDiagnostics"
+            >
+              <Icon icon="solar:restart-linear" aria-hidden="true" />重试
+            </button>
+          </div>
+          <div v-else-if="diagnosticItems.length === 0" class="diagnostics-empty">
+            <Icon icon="solar:document-text-linear" aria-hidden="true" />
+            <span
+              ><strong>暂无诊断记录</strong
+              ><small>扫描或出现安装异常后，相关记录会显示在这里。</small></span
+            >
           </div>
           <div v-else class="diagnostic-logs">
             <article v-for="log in diagnosticItems" :key="log.name" class="diagnostic-row">
               <div class="diagnostic-file">
-                <Icon
-                  :icon="log.present ? 'solar:document-text-linear' : 'solar:file-remove-linear'"
-                  aria-hidden="true"
-                />
+                <Icon icon="solar:document-text-linear" aria-hidden="true" />
                 <div>
-                  <strong>{{ log.name }}</strong>
+                  <strong>{{ diagnosticTitle(log.name) }}</strong>
                   <small>{{ diagnosticDescription(log.name) }}</small>
                 </div>
               </div>
               <button
                 class="log-action"
                 type="button"
-                :disabled="!log.present"
-                :aria-label="`查看 ${log.name}`"
+                :aria-label="`查看 ${diagnosticTitle(log.name)}`"
                 @click="openDiagnostic(log)"
               >
                 <Icon icon="solar:maximize-square-3-linear" />查看
@@ -1517,11 +2044,9 @@ onBeforeUnmount(clearPathIconTimer)
           aria-labelledby="clear-diagnostics-title"
         >
           <Icon class="warning-icon" icon="solar:danger-triangle-linear" />
-          <p class="eyebrow">CLEAR DIAGNOSTICS</p>
           <h2 id="clear-diagnostics-title">清空 DockFN 诊断历史？</h2>
           <p>
-            只会截断 DockFN 的
-            <code>server/helper/lifecycle</code> 日志并移除最近扫描、安装失败报告。<strong
+            只会清理 DockFN 保存的运行日志、最近扫描和安装失败记录。<strong
               >不会清理 fnOS、应用中心、Docker 或目标服务日志。</strong
             >
             历史内容无法恢复。
@@ -1568,8 +2093,7 @@ onBeforeUnmount(clearPathIconTimer)
         >
           <header class="dialog-head">
             <div>
-              <p class="eyebrow">FULL DIAGNOSTIC</p>
-              <h2>{{ selectedDiagnostic.name }}</h2>
+              <h2>{{ diagnosticTitle(selectedDiagnostic.name) }}</h2>
             </div>
             <div class="log-viewer-actions">
               <span v-if="diagnosticNotice" class="log-copy-status" role="status">{{
@@ -1578,7 +2102,7 @@ onBeforeUnmount(clearPathIconTimer)
               <button
                 class="secondary-button"
                 type="button"
-                :aria-label="`复制完整 ${selectedDiagnostic.name}`"
+                :aria-label="`复制完整 ${diagnosticTitle(selectedDiagnostic.name)}`"
                 @click="copyDiagnostic(selectedDiagnostic)"
               >
                 <Icon icon="solar:copy-linear" />复制全文
@@ -1587,6 +2111,7 @@ onBeforeUnmount(clearPathIconTimer)
                 class="icon-action"
                 type="button"
                 aria-label="关闭独立日志窗口"
+                title="关闭日志查看"
                 @click="selectedDiagnostic = null"
               >
                 <Icon icon="solar:close-circle-linear" />
@@ -1607,7 +2132,6 @@ onBeforeUnmount(clearPathIconTimer)
           aria-labelledby="remove-title"
         >
           <Icon class="warning-icon" icon="solar:danger-triangle-linear" />
-          <p class="eyebrow">REMOVE ENTRY</p>
           <h2 id="remove-title">移除“{{ pendingRemoval.displayName }}”？</h2>
           <p>
             该操作只会卸载 DockFN 创建的 fnOS 应用入口，<strong
@@ -1628,7 +2152,7 @@ onBeforeUnmount(clearPathIconTimer)
               :disabled="!!busy"
               @click="removeConfirmed"
             >
-              <Icon icon="solar:trash-bin-trash-linear" />仅移除应用入口
+              <Icon icon="solar:trash-bin-trash-linear" />移除应用入口
             </button>
           </footer>
         </section>

@@ -169,29 +169,87 @@ func validInput() Input {
 	return Input{DisplayName: "Photos", OpenType: "iframe", Protocol: "http", Port: 8080, Path: "/", AllUsers: true}
 }
 
+type staticSettings struct {
+	value Settings
+}
+
+func (s staticSettings) Get(context.Context) (Settings, error) {
+	return s.value, nil
+}
+
+func TestCreateUsesServerSideGlobalIdentityAndBadgeDefaults(t *testing.T) {
+	service, repository, _ := testService(t)
+	configured := DefaultSettings()
+	configured.EntryPrefixTemplate = "app-{id}"
+	configured.ShowDockFNBadge = false
+	service.Settings = staticSettings{value: configured}
+	input := validInput()
+	input.OpenType = ""
+	created, err := service.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.AppName != "app-photos" || created.EntryID != "photos" || created.OpenType != "url" || DockFNBadgeEnabled(created.AppSpec) {
+		t.Fatalf("global defaults were not applied: %#v", created.AppSpec)
+	}
+	stored, err := repository.Get(context.Background(), created.ID)
+	if err != nil || stored.ShowDockFNBadge == nil || *stored.ShowDockFNBadge {
+		t.Fatalf("badge preference was not persisted: %#v err=%v", stored, err)
+	}
+}
+
 func TestCreateAndUpdateKeepStableAppName(t *testing.T) {
 	service, repository, _ := testService(t)
+	configured := DefaultSettings()
+	service.Settings = staticSettings{value: configured}
 	created, err := service.Create(context.Background(), validInput())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AppName != "d012345abcdef.dkfn" || created.Revision != 1 {
+	if created.AppName != "dkfn.photos" || created.EntryID != "photos" || created.Revision != 1 {
 		t.Fatalf("unexpected create result: %#v", created.AppSpec)
 	}
 	input := validInput()
 	input.DisplayName = "Family Photos"
 	input.OpenType = "url"
 	input.Port = 9090
+	configured.ShowDockFNBadge = false
+	service.Settings = staticSettings{value: configured}
 	updated, err := service.Update(context.Background(), created.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.AppName != created.AppName || updated.Revision != 2 {
+	if updated.AppName != created.AppName || updated.Revision != 2 || DockFNBadgeEnabled(updated.AppSpec) {
 		t.Fatalf("identity changed during update: %#v", updated.AppSpec)
 	}
 	stored, _ := repository.Get(context.Background(), created.ID)
 	if stored.DisplayName != "Family Photos" || stored.AppName != created.AppName || stored.OpenType != "url" {
 		t.Fatalf("unexpected stored update: %#v", stored)
+	}
+}
+
+func TestRefreshIconAppliesCurrentBadgeWithoutProbingTarget(t *testing.T) {
+	service, repository, _ := testService(t)
+	created, err := service.Create(context.Background(), validInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := DefaultSettings()
+	settings.ShowDockFNBadge = false
+	service.Settings = staticSettings{value: settings}
+	service.Probe = func(context.Context, uint16) error { return errors.New("target is offline") }
+
+	refreshed, err := service.RefreshIcon(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("refresh icon unexpectedly probed the target: %v", err)
+	}
+	if refreshed.Revision != created.Revision+1 || DockFNBadgeEnabled(refreshed.AppSpec) ||
+		refreshed.AppName != created.AppName || refreshed.Port != created.Port || refreshed.Path != created.Path {
+		t.Fatalf("unexpected icon refresh result: %#v", refreshed.AppSpec)
+	}
+	stored, err := repository.Get(context.Background(), created.ID)
+	if err != nil || DockFNBadgeEnabled(stored) {
+		t.Fatalf("refreshed badge setting was not persisted: %#v err=%v", stored, err)
 	}
 }
 
@@ -240,7 +298,7 @@ func TestCreateUsesCustomEntryPrefixAndUpdateMigratesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AppName != "blinko.dkfn" {
+	if created.AppName != "dkfn.blinko" {
 		t.Fatalf("custom appName=%q", created.AppName)
 	}
 	input.EntryPrefix = "other"
@@ -249,10 +307,10 @@ func TestCreateUsesCustomEntryPrefixAndUpdateMigratesIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ := repository.Get(context.Background(), created.ID)
-	if updated.AppName != "other.dkfn" || stored.AppName != "other.dkfn" || stored.Revision != 2 {
+	if updated.AppName != "dkfn.other" || stored.AppName != "dkfn.other" || stored.Revision != 2 {
 		t.Fatalf("identity migration was not persisted: %#v", stored)
 	}
-	wantCalls := []string{"install:blinko.dkfn", "install:other.dkfn", "remove:blinko.dkfn"}
+	wantCalls := []string{"install:dkfn.blinko", "install:dkfn.other", "remove:dkfn.blinko"}
 	if len(platform.calls) != len(wantCalls) {
 		t.Fatalf("calls=%#v", platform.calls)
 	}
@@ -271,13 +329,13 @@ func TestIdentityMigrationKeepsOldRegistrationWhenRemovalFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	platform.fail["remove:old.dkfn"] = errors.New("old shell busy")
+	platform.fail["remove:dkfn.old"] = errors.New("old shell busy")
 	input.EntryPrefix = "new"
 	if _, err = service.Update(context.Background(), created.ID, input); !errors.Is(err, ErrRegistration) {
 		t.Fatalf("wanted registration error, got %v", err)
 	}
 	stored, _ := repository.Get(context.Background(), created.ID)
-	if stored.AppName != "old.dkfn" || !platform.installed["old.dkfn"] || platform.installed["new.dkfn"] {
+	if stored.AppName != "dkfn.old" || !platform.installed["dkfn.old"] || platform.installed["dkfn.new"] {
 		t.Fatalf("failed migration state stored=%#v installed=%#v calls=%#v", stored, platform.installed, platform.calls)
 	}
 }

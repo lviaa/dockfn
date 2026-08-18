@@ -13,18 +13,22 @@ import (
 // transient; only the administrator-selected origin snapshot is retained for
 // display and search.
 type AppSpec struct {
-	ID          string  `json:"id"`
-	AppName     string  `json:"appName"`
-	DisplayName string  `json:"displayName"`
-	Description string  `json:"description,omitempty"`
-	IconPath    string  `json:"iconPath,omitempty"`
-	Origin      *Origin `json:"origin,omitempty"`
-	OpenType    string  `json:"openType"`
-	Protocol    string  `json:"protocol"`
-	Port        uint16  `json:"port"`
-	Path        string  `json:"path"`
-	AllUsers    bool    `json:"allUsers"`
-	Revision    uint32  `json:"revision"`
+	ID          string `json:"id"`
+	AppName     string `json:"appName"`
+	EntryID     string `json:"entryId,omitempty"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description,omitempty"`
+	IconPath    string `json:"iconPath,omitempty"`
+	// ShowDockFNBadge is nil for 0.1.0 records, which means enabled for
+	// backward compatibility. New records persist the selected global default.
+	ShowDockFNBadge *bool   `json:"showDockFNBadge,omitempty"`
+	Origin          *Origin `json:"origin,omitempty"`
+	OpenType        string  `json:"openType"`
+	Protocol        string  `json:"protocol"`
+	Port            uint16  `json:"port"`
+	Path            string  `json:"path"`
+	AllUsers        bool    `json:"allUsers"`
+	Revision        uint32  `json:"revision"`
 }
 
 type Input struct {
@@ -69,6 +73,36 @@ type OperationResult struct {
 	Code string `json:"code"`
 }
 
+// Settings are administrator-wide defaults. Existing applications keep the
+// concrete entry identity stored in AppSpec when this policy changes.
+type Settings struct {
+	EntryPrefixTemplate string `json:"entryPrefixTemplate"`
+	DefaultOpenType     string `json:"defaultOpenType"`
+	DefaultAllUsers     bool   `json:"defaultAllUsers"`
+	AutoScanOnCreate    bool   `json:"autoScanOnCreate"`
+	ShowDockFNBadge     bool   `json:"showDockFNBadge"`
+}
+
+func DefaultSettings() Settings {
+	return Settings{
+		EntryPrefixTemplate: DefaultEntryPrefixTemplate,
+		DefaultOpenType:     "url",
+		DefaultAllUsers:     false,
+		AutoScanOnCreate:    true,
+		ShowDockFNBadge:     true,
+	}
+}
+
+func ValidateSettings(settings Settings) error {
+	if err := ValidateEntryPrefixTemplate(settings.EntryPrefixTemplate); err != nil {
+		return &ValidationError{Fields: []FieldError{{Field: "entryPrefixTemplate", Message: err.Error()}}}
+	}
+	if openType := NormalizeOpenType(settings.DefaultOpenType); openType != "iframe" && openType != "url" {
+		return &ValidationError{Fields: []FieldError{{Field: "defaultOpenType", Message: "must be iframe or url"}}}
+	}
+	return nil
+}
+
 type FieldError struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
@@ -88,26 +122,16 @@ func (e *ValidationError) Error() string {
 var (
 	idPattern            = regexp.MustCompile(`^[a-f0-9]{12}$`)
 	entryPrefixPattern   = regexp.MustCompile(`^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?$`)
-	domainAppNamePattern = regexp.MustCompile(`^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?\.dkfn$`)
+	appNamePattern       = regexp.MustCompile(`^[a-z](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$`)
+	legacyAppNamePattern = regexp.MustCompile(`^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?\.dkfn$`)
 )
 
-func NewAppName(id string, requested ...string) (string, error) {
-	if !idPattern.MatchString(id) {
-		return "", errors.New("invalid application ID")
-	}
-	if len(requested) > 1 {
-		return "", errors.New("only one entry prefix may be provided")
-	}
-	// Keep the immutable internal ID intact and add a stable letter only to the
-	// automatically generated launch identity.
-	prefix := "d" + id
-	if len(requested) == 1 && strings.TrimSpace(requested[0]) != "" {
-		prefix = strings.TrimSpace(requested[0])
-		if !entryPrefixPattern.MatchString(prefix) {
-			return "", errors.New("must contain 1 to 27 lowercase letters, numbers, or internal hyphens and start with a letter")
-		}
-	}
-	return prefix + ".dkfn", nil
+func DockFNBadgeEnabled(spec AppSpec) bool {
+	return spec.ShowDockFNBadge == nil || *spec.ShowDockFNBadge
+}
+
+func Bool(value bool) *bool {
+	return &value
 }
 
 func Validate(spec AppSpec) error {
@@ -117,6 +141,9 @@ func Validate(spec AppSpec) error {
 	}
 	if !IsOwnedAppName(spec.AppName) || strings.Contains(spec.AppName, "..") {
 		fields = append(fields, FieldError{Field: "appName", Message: "must use a safe DockFN identifier"})
+	}
+	if spec.EntryID != "" && !entryPrefixPattern.MatchString(spec.EntryID) {
+		fields = append(fields, FieldError{Field: "entryId", Message: "must contain 1 to 27 lowercase letters, numbers, or internal hyphens and start with a letter"})
 	}
 	name := strings.TrimSpace(spec.DisplayName)
 	if name == "" || len([]rune(name)) > 80 || hasControl(name) {
@@ -222,7 +249,14 @@ func hasControlExceptNewline(value string) bool {
 }
 
 func IsOwnedAppName(value string) bool {
-	return domainAppNamePattern.MatchString(value)
+	return len(value) <= 63 && appNamePattern.MatchString(value)
+}
+
+func IsManagedSpec(spec AppSpec) bool {
+	if entryPrefixPattern.MatchString(spec.EntryID) {
+		return IsOwnedAppName(spec.AppName)
+	}
+	return spec.EntryID == "" && legacyAppNamePattern.MatchString(spec.AppName)
 }
 
 // DesktopEntryName centralizes the fnOS identity rule. The entry uses appName
@@ -232,7 +266,7 @@ func DesktopEntryName(appName string) string {
 }
 
 func EntryPrefix(appName string) string {
-	if domainAppNamePattern.MatchString(appName) {
+	if strings.HasSuffix(appName, ".dkfn") {
 		return strings.TrimSuffix(appName, ".dkfn")
 	}
 	return ""

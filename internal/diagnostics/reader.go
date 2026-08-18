@@ -32,17 +32,39 @@ type Reader struct {
 }
 
 func (r Reader) Snapshot() Snapshot {
-	logs := make([]Log, 0, 3)
-	for _, name := range []string{"lifecycle.log", "server.log", "helper.log"} {
-		text, present := readTail(filepath.Join(r.LogDir, name))
-		logs = append(logs, Log{Name: name, Text: redact(text), Present: present})
-	}
+	logs := runtimeLog(r.LogDir)
 	reports := make([]Log, 0, 2)
-	for _, name := range []string{"last-install-failure.json", "last-discovery.json"} {
+	for _, name := range []string{"last-discovery.json", "last-install-failure.json"} {
 		text, present := readTail(filepath.Join(r.DataDir, "diagnostics", name))
-		reports = append(reports, Log{Name: name, Text: redact(text), Present: present})
+		if present && strings.TrimSpace(text) != "" {
+			reports = append(reports, Log{Name: name, Text: redact(text), Present: true})
+		}
 	}
 	return Snapshot{Logs: logs, Reports: reports}
+}
+
+// runtimeLog presents the useful runtime output as one on-demand record. The
+// lifecycle log is deliberately excluded: fnOS normally owns it through its
+// temporary lifecycle log file, so it is not a dependable application record.
+func runtimeLog(directory string) []Log {
+	sections := make([]string, 0, 2)
+	for _, source := range []struct {
+		name  string
+		title string
+	}{
+		{name: "server.log", title: "管理服务"},
+		{name: "helper.log", title: "权限助手"},
+	} {
+		text, present := readTail(filepath.Join(directory, source.name))
+		if !present || strings.TrimSpace(text) == "" {
+			continue
+		}
+		sections = append(sections, "["+source.title+"]\n"+text)
+	}
+	if len(sections) == 0 {
+		return make([]Log, 0)
+	}
+	return []Log{{Name: "runtime.log", Text: redact(strings.Join(sections, "\n\n")), Present: true}}
 }
 
 func readTail(path string) (string, bool) {

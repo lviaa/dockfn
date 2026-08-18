@@ -76,16 +76,22 @@ func httpFixture(t *testing.T) (http.Handler, *config.FileStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settingsStore, err := config.OpenSettingsStore(data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	service := &app.Service{
 		Repo: repository, Builder: httpBuilder{staging: staging},
 		Platform:   &httpPlatform{installed: map[string]bool{}},
 		Discoverer: httpDiscoverer{},
 		DataDir:    data, StagingDir: staging,
-		Probe: func(context.Context, uint16) error { return nil },
-		NewID: func() (string, error) { return "012345abcdef", nil },
+		Probe:    func(context.Context, uint16) error { return nil },
+		NewID:    func() (string, error) { return "012345abcdef", nil },
+		Settings: settingsStore,
 	}
 	server := &Server{
-		Apps: service, Discovery: discoveryStore, Version: "test", HelperAvailable: func() bool { return true },
+		Apps: service, Discovery: discoveryStore, Settings: settingsStore,
+		Version: "test", HelperAvailable: func() bool { return true },
 		ClearDiagnostics: func(context.Context) error { return nil },
 	}
 	return server.Handler(), repository
@@ -108,6 +114,59 @@ func TestDiscoveryIgnoredKeysPersistThroughAPI(t *testing.T) {
 	response = adminRequest(handler, http.MethodPost, "/api/discovery/scan", nil)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "ignoredKeys") {
 		t.Fatalf("scan ignored status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestGlobalSettingsValidatePersistAndDriveCreation(t *testing.T) {
+	handler, repository := httpFixture(t)
+	response := adminRequest(handler, http.MethodPut, "/api/settings", []byte(`{
+		"entryPrefixTemplate":"{id}",
+		"defaultOpenType":"url",
+		"defaultAllUsers":false,
+		"autoScanOnCreate":true,
+		"showDockFNBadge":true
+	}`))
+	if response.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(response.Body.String(), `"field":"entryPrefixTemplate"`) {
+		t.Fatalf("unsafe settings status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = adminRequest(handler, http.MethodPut, "/api/settings", []byte(`{
+		"entryPrefixTemplate":"app-{id}",
+		"defaultOpenType":"iframe",
+		"defaultAllUsers":true,
+		"autoScanOnCreate":false,
+		"showDockFNBadge":false
+	}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("save settings status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = adminRequest(handler, http.MethodGet, "/api/settings", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"entryPrefixTemplate":"app-{id}"`) {
+		t.Fatalf("get settings status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = adminRequest(handler, http.MethodPost, "/api/apps", []byte(`{
+		"displayName":"Panel",
+		"protocol":"http",
+		"port":8080,
+		"path":"/",
+		"allUsers":true
+	}`))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+	stored, err := repository.Get(context.Background(), "012345abcdef")
+	if err != nil || stored.AppName != "app-panel" || stored.EntryID != "panel" || stored.ShowDockFNBadge == nil || *stored.ShowDockFNBadge {
+		t.Fatalf("stored application=%#v err=%v", stored, err)
+	}
+}
+
+func TestSuggestEntryIDUsesPinyinAndCurrentTemplate(t *testing.T) {
+	handler, _ := httpFixture(t)
+	response := adminRequest(handler, http.MethodPost, "/api/entry-ids/suggest", []byte(`{"displayName":"飞牛应用坞 DockFN"}`))
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"entryId":"fei-niu-ying-yong-wu-dockfn"`) ||
+		!strings.Contains(response.Body.String(), `"appName":"dkfn.fei-niu-ying-yong-wu-dockfn"`) {
+		t.Fatalf("suggest status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -155,6 +214,7 @@ func TestSynchronousLifecycleAndManualDiscoveryRoutes(t *testing.T) {
 		{http.MethodPost, "/api/discovery/scan", http.StatusOK},
 		{http.MethodGet, "/api/apps/012345abcdef", http.StatusOK},
 		{http.MethodPost, "/api/apps/012345abcdef/check", http.StatusOK},
+		{http.MethodPost, "/api/apps/012345abcdef/refresh-icon", http.StatusOK},
 		{http.MethodPost, "/api/apps/012345abcdef/repair", http.StatusOK},
 		{http.MethodGet, "/api/system/status", http.StatusOK},
 		{http.MethodGet, "/api/system/diagnostics", http.StatusOK},
@@ -206,7 +266,7 @@ func TestCreateAcceptsCustomEntryPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.AppName != "blinko.dkfn" {
+	if stored.AppName != "dkfn.blinko" {
 		t.Fatalf("custom appName=%q", stored.AppName)
 	}
 }
@@ -226,7 +286,7 @@ func TestCreateRejectsNumericEntryPrefix(t *testing.T) {
 func TestRemovedPlatformRoutesStayAbsent(t *testing.T) {
 	handler, _ := httpFixture(t)
 	for _, path := range []string{
-		"/api/jobs", "/api/candidates", "/api/settings", "/api/audit-events",
+		"/api/jobs", "/api/candidates", "/api/audit-events",
 		"/api/label-templates", "/api/auth/session", "/api/backup",
 	} {
 		response := adminRequest(handler, http.MethodGet, path, nil)

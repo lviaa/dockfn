@@ -59,7 +59,7 @@ func main() {
 		inspectFPK(path, version)
 	}
 	requiredFiles := []string{
-		"VERSION", "README.md", "docs/architecture.md", "docs/operations.md", "docs/security.md",
+		"VERSION", "README.md", "THIRD_PARTY_NOTICES.md", "docs/architecture.md", "docs/operations.md", "docs/security.md",
 		"docs/release.md", "docs/adr/README.md", "api/openapi.yaml",
 		filepath.Clean(*checksumFileFlag),
 	}
@@ -127,7 +127,7 @@ func inspectFPK(path, version string) {
 	appMembers := readArchive(path+" app.tgz", bytes.NewReader(members["app.tgz"].body))
 	for _, name := range []string{
 		"target/dockfn", "ui/config", "ui/images/icon_64.png", "ui/images/icon_256.png",
-		"config/resource", "config/privilege",
+		"config/resource", "config/privilege", "target/THIRD_PARTY_NOTICES.md",
 	} {
 		requireMember(path+" app.tgz", appMembers, name)
 	}
@@ -258,14 +258,16 @@ func scanSource() {
 		}
 	}
 	server := mustRead("internal/http/server.go")
-	for _, forbidden := range []string{"/jobs", "/candidates", "/audit-events", "/settings", "/label-templates", "/auth/"} {
+	for _, forbidden := range []string{"/jobs", "/candidates", "/audit-events", "/label-templates", "/auth/"} {
 		if strings.Contains(server, forbidden) {
 			panic("removed API remains in server: " + forbidden)
 		}
 	}
 	openAPI := mustRead("api/openapi.yaml")
 	requireText("OpenAPI", openAPI,
-		"openapi: 3.0.3", "/apps:", "/discovery/scan:", "/icons/preview:", "/system/diagnostics:",
+		"openapi: 3.0.3", "/apps:", "/settings:", "/entry-ids/suggest:", "/discovery/scan:", "/icons/preview:", "/system/diagnostics:",
+		"operationId: getGlobalSettings", "operationId: replaceGlobalSettings",
+		"operationId: suggestApplicationEntryID",
 		"operationId: clearDiagnostics", "ownerConfidence:", "preferred:", "reports:", "maxLength: 27",
 	)
 	helper := mustRead("internal/fnos/helper.go")

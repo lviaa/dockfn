@@ -43,6 +43,7 @@ for arch in amd64 arm64; do
   cp "$root/packaging/fnos/native/resource" "$work/config/resource"
   cp "$root/packaging/fnos/native/privilege" "$work/config/privilege"
   cp "$root/bin/dockfn-linux-$arch" "$work/app/target/dockfn"
+  cp "$root/THIRD_PARTY_NOTICES.md" "$work/app/target/THIRD_PARTY_NOTICES.md"
   chmod 755 "$work"/cmd/* "$work/app/target/dockfn"
 
   output="$out/dockfn-$version-$artifact_arch.fpk"

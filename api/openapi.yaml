@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: DockFN API
-  version: 0.1.0
+  version: 0.1.1
   description: >-
     Administrative API for registering existing host Web services as fnOS
     desktop entries. Discovery is read-only and never registers an application.
@@ -98,6 +98,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApplicationView"
+  /apps/{id}/refresh-icon:
+    parameters:
+      - $ref: "#/components/parameters/ApplicationID"
+    post:
+      operationId: refreshApplicationIcon
+      description: >-
+        Rebuilds and reinstalls the current DockFN entry shell icon using the
+        global DockFN badge preference. It does not probe, start, stop or
+        otherwise change the target Web service.
+      responses:
+        "200":
+          description: Desktop icon refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationResult"
+        "502":
+          $ref: "#/components/responses/Problem"
   /apps/{id}/repair:
     parameters:
       - $ref: "#/components/parameters/ApplicationID"
@@ -142,6 +160,59 @@ paths:
               schema:
                 $ref: "#/components/schemas/DiscoveryList"
         "503":
+          $ref: "#/components/responses/Problem"
+  /settings:
+    get:
+      operationId: getGlobalSettings
+      description: Returns DockFN-wide defaults used by the create workflow.
+      responses:
+        "200":
+          description: Current global settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+    put:
+      operationId: replaceGlobalSettings
+      description: >-
+        Atomically replaces DockFN-wide defaults. Existing application
+        identities and registration shells are not changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Settings"
+      responses:
+        "200":
+          description: Saved global settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "422":
+          $ref: "#/components/responses/Problem"
+  /entry-ids/suggest:
+    post:
+      operationId: suggestApplicationEntryID
+      description: >-
+        Converts a display name to a lowercase application ID suggestion and
+        renders the current complete fnOS ID template. The result is advisory
+        and can be edited before creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdentitySuggestionInput"
+      responses:
+        "200":
+          description: Suggested application and complete fnOS IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentitySuggestion"
+        "422":
           $ref: "#/components/responses/Problem"
   /discovery/ignored:
     get:
@@ -230,7 +301,7 @@ paths:
       operationId: getDiagnostics
       responses:
         "200":
-          description: Redacted log tails and diagnostic reports
+          description: Redacted latest discovery and install-failure reports plus a non-empty combined runtime log
           content:
             application/json:
               schema:
@@ -291,13 +362,13 @@ components:
           maxLength: 27
           pattern: "^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?$"
           description: >-
-            Optional mutable launch ID request using 1 to 27 lowercase letters,
-            numbers, or internal hyphens and beginning with a letter. The
-            appname and desktop entry are <ID>.dkfn. Changing it performs a
-            verified replacement of the DockFN registration shell. When
-            omitted during creation, DockFN uses d followed by the immutable
-            12-character application ID. Any FN Connect hostname derived from
-            the entry remains fnOS-owned.
+            Optional mutable application ID using 1 to 27 lowercase letters,
+            numbers, or internal hyphens and beginning with a letter. DockFN
+            inserts it into the configured complete fnOS ID template. When
+            omitted during creation, DockFN first derives pinyin/lowercase text
+            from displayName and finally falls back to d plus the immutable
+            internal ID. Changing it performs a verified replacement of the
+            registration shell. Any FN Connect hostname remains fnOS-owned.
         iconBase64:
           type: string
           description: PNG, JPEG or ICO data URL; mutually exclusive with iconUri.
@@ -415,9 +486,19 @@ components:
               pattern: "^[a-f0-9]{12}$"
             appName:
               type: string
-              pattern: '^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?\.dkfn$'
+              maxLength: 63
+              pattern: '^[a-z](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$'
+            entryId:
+              type: string
+              maxLength: 27
+              pattern: "^[a-z](?:[a-z0-9-]{0,25}[a-z0-9])?$"
             iconPath:
               type: string
+            showDockFNBadge:
+              type: boolean
+              description: >-
+                Whether this registration shell uses the DockFN badge. Missing
+                values from 0.1.0 records are treated as true.
             revision:
               type: integer
               minimum: 1
@@ -451,6 +532,56 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ApplicationView"
+        settings:
+          $ref: "#/components/schemas/Settings"
+    Settings:
+      type: object
+      additionalProperties: false
+      required:
+        - entryPrefixTemplate
+        - defaultOpenType
+        - defaultAllUsers
+        - autoScanOnCreate
+        - showDockFNBadge
+      properties:
+        entryPrefixTemplate:
+          type: string
+          example: dkfn.{id}
+          description: >-
+            Complete fnOS application ID template. It must contain exactly one
+            {id} placeholder plus a fixed lowercase identifier and render to a
+            safe value no longer than 63 characters. DockFN does not append a
+            suffix. Examples include dkfn.{id} and {id}.dkfn.
+        defaultOpenType:
+          type: string
+          enum: [iframe, url]
+        defaultAllUsers:
+          type: boolean
+        autoScanOnCreate:
+          type: boolean
+        showDockFNBadge:
+          type: boolean
+          description: Default for newly created registration shells only.
+    IdentitySuggestionInput:
+      type: object
+      additionalProperties: false
+      required: [displayName]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+    IdentitySuggestion:
+      type: object
+      additionalProperties: false
+      required: [entryId, appName]
+      properties:
+        entryId:
+          type: string
+          maxLength: 27
+        appName:
+          type: string
+          maxLength: 63
     OperationResult:
       type: object
       required: [app, code]
