@@ -2184,11 +2184,6 @@ code,
     height: 39px;
   }
 
-  .app-card .actions .icon-action:nth-of-type(2),
-  .app-card .actions .icon-action:nth-of-type(3) {
-    display: none;
-  }
-
   .statuses strong {
     font-size: 10px;
   }

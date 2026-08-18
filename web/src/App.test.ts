@@ -78,6 +78,10 @@ function response(value: unknown) {
 }
 
 describe('DockFN single page', () => {
+  it('keeps every registered-application action available on narrow screens', () => {
+    expect(styles).not.toContain('.app-card .actions .icon-action:nth-of-type(2)')
+  })
+
   it('renders registered applications as the primary view', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response([application])))
     const page = await mountPage()
