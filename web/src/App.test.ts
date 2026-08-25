@@ -874,15 +874,18 @@ describe('DockFN single page', () => {
       new Response(
         JSON.stringify({
           code: 'FNOS_OPERATION_FAILED',
-          message: 'fnOS registration operation failed',
+          message: 'fnpack output: found no .fpk files',
           suggestion: '查看安装诊断后重试。',
         }),
         { status: 502, headers: { 'Content-Type': 'application/json' } },
       ),
     )
     await vi.waitFor(() =>
-      expect(page.querySelector('.review-error')?.textContent).toContain('DockFN 已保留安装诊断'),
+      expect(page.querySelector('.review-error')?.textContent).toContain(
+        'fnpack output: found no .fpk files',
+      ),
     )
+    expect(page.querySelector('.review-error')?.textContent).not.toContain('DockFN 已保留安装诊断')
     expect(page.querySelector('.creator-dialog')).not.toBeNull()
     expect(page.querySelector('.completion-progress')).toBeNull()
     expect(page.querySelector('[data-step="review"]')?.classList.contains('active')).toBe(true)

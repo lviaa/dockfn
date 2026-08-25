@@ -195,6 +195,11 @@ func TestHelperRejectsAmbiguousOrMissingFnpackArtifacts(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("install error = %v, want %q", err, test.want)
 			}
+			body, readErr := os.ReadFile(filepath.Join(helper.DataDir, "diagnostics", "last-install-failure.json"))
+			if readErr != nil || !strings.Contains(string(body), "select-fnpack-artifact") ||
+				!strings.Contains(string(body), spec.AppName) || !strings.Contains(string(body), test.want) {
+				t.Fatalf("fnpack artifact failure diagnostics were not retained: body=%q err=%v", body, readErr)
+			}
 		})
 	}
 }

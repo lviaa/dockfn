@@ -999,7 +999,9 @@ function suggestionLabel(candidate: DiscoveryCandidate) {
 function errorMessage(reason: unknown) {
   if (reason instanceof APIError) {
     if (reason.code === 'FNOS_OPERATION_FAILED') {
-      return 'fnOS 应用登记未完成。DockFN 已保留安装诊断；请打开“诊断”查看详情后重试。'
+      return `fnOS 应用登记未完成：${reason.message}${
+        reason.suggestion ? ` ${reason.suggestion}` : ''
+      }`
     }
     return `${reason.message}${reason.suggestion ? ` ${reason.suggestion}` : ''}`
   }
