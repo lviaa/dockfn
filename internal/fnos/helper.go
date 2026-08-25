@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -198,9 +199,9 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 	if runErr != nil {
 		return actionResponse{}, fmt.Errorf("fnpack build failed: %s", redact(output))
 	}
-	fpkPath := filepath.Join(outputDir, input.AppName+".fpk")
-	if err = requireRegularFile(fpkPath); err != nil {
-		return actionResponse{}, fmt.Errorf("fnpack output: %w", err)
+	fpkPath, err := singleFPKArtifact(outputDir)
+	if err != nil {
+		return actionResponse{}, fmt.Errorf("fnpack output: %w; command output: %s", err, redact(output))
 	}
 	if err = h.makeArtifactAccessible(outputDir, fpkPath); err != nil {
 		return actionResponse{}, fmt.Errorf("fnpack output permissions: %w", err)
@@ -759,6 +760,37 @@ func (h *Helper) makeArtifactAccessible(outputDir, fpkPath string) error {
 		return err
 	}
 	return os.Chmod(fpkPath, 0o660)
+}
+
+func singleFPKArtifact(outputDir string) (string, error) {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return "", fmt.Errorf("read output directory %s: %w", outputDir, err)
+	}
+	artifacts := make([]string, 0, 1)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".fpk" {
+			continue
+		}
+		path := filepath.Join(outputDir, entry.Name())
+		if err := requireRegularFile(path); err != nil {
+			return "", fmt.Errorf("invalid FPK artifact %s: %w", entry.Name(), err)
+		}
+		artifacts = append(artifacts, path)
+	}
+	sort.Strings(artifacts)
+	switch len(artifacts) {
+	case 1:
+		return artifacts[0], nil
+	case 0:
+		return "", fmt.Errorf("found no .fpk files in %s", outputDir)
+	default:
+		names := make([]string, 0, len(artifacts))
+		for _, artifact := range artifacts {
+			names = append(names, filepath.Base(artifact))
+		}
+		return "", fmt.Errorf("found %d .fpk files in %s: %s", len(artifacts), outputDir, strings.Join(names, ", "))
+	}
 }
 
 func (h *Helper) runner() Runner {

@@ -26,6 +26,7 @@ type helperRunner struct {
 	registrations  map[string]registration
 	calls          []string
 	failNewInstall bool
+	artifactNames  []string
 }
 
 func (r *helperRunner) Run(_ context.Context, directory, name string, arguments ...string) ([]byte, error) {
@@ -48,7 +49,16 @@ func (r *helperRunner) Run(_ context.Context, directory, name string, arguments 
 		if appName == "" {
 			return nil, errors.New("manifest missing appname")
 		}
-		return []byte("built"), os.WriteFile(filepath.Join(directory, appName+".fpk"), []byte("fpk"), 0o640)
+		artifactNames := []string{appName + ".fpk"}
+		if r.artifactNames != nil {
+			artifactNames = r.artifactNames
+		}
+		for _, artifactName := range artifactNames {
+			if err := os.WriteFile(filepath.Join(directory, artifactName), []byte(appName), 0o640); err != nil {
+				return nil, err
+			}
+		}
+		return []byte("built"), nil
 	case "appcenter-cli":
 		switch arguments[0] {
 		case "list":
@@ -61,13 +71,11 @@ func (r *helperRunner) Run(_ context.Context, directory, name string, arguments 
 			return []byte("1\n"), nil
 		case "install-fpk":
 			appName := strings.TrimSuffix(filepath.Base(arguments[1]), ".fpk")
-			if strings.Contains(filepath.ToSlash(arguments[1]), "/packages/current/") {
-				body, err := os.ReadFile(arguments[1])
-				if err != nil {
-					return nil, err
-				}
-				appName = strings.TrimSpace(string(body))
+			body, err := os.ReadFile(arguments[1])
+			if err != nil {
+				return nil, err
 			}
+			appName = strings.TrimSpace(string(body))
 			if r.failNewInstall && strings.Contains(arguments[1], "fnpack-output") {
 				r.failNewInstall = false
 				return []byte("install rejected"), errors.New("install rejected")
@@ -147,6 +155,47 @@ func TestHelperInstallsNewDomainIdentity(t *testing.T) {
 	}
 	if _, exists := runner.registrations["blinko.dkfn"]; !exists || !helper.owned("blinko.dkfn") {
 		t.Fatalf("new identity was not installed or owned: %#v", runner.registrations)
+	}
+}
+
+func TestHelperInstallsExactlyOneFPKRegardlessOfFnpackFilename(t *testing.T) {
+	helper, spec, relative, runner := helperFixtureWithAppName(t, "dkfn.fn16t-bt")
+	runner.artifactNames = []string{"fnpack-generated-name.fpk"}
+	helper.DesktopEntryVerifier = func(string, string, app.AppSpec) error { return nil }
+
+	response, err := helper.install(context.Background(), "install", actionRequest{
+		AppName: spec.AppName, SourceRelative: relative,
+	})
+	if err != nil {
+		t.Fatalf("single fnpack artifact with a different filename was rejected: %v", err)
+	}
+	if !strings.HasSuffix(response.FPKRelative, "/fnpack-generated-name.fpk") {
+		t.Fatalf("installed artifact = %q, want the generated FPK", response.FPKRelative)
+	}
+}
+
+func TestHelperRejectsAmbiguousOrMissingFnpackArtifacts(t *testing.T) {
+	tests := []struct {
+		name          string
+		artifactNames []string
+		want          string
+	}{
+		{name: "missing", artifactNames: []string{}, want: "found no .fpk files"},
+		{name: "multiple", artifactNames: []string{"first.fpk", "second.fpk"}, want: "found 2 .fpk files"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			helper, spec, relative, runner := helperFixtureWithAppName(t, "dkfn.fn16t-bt")
+			runner.artifactNames = test.artifactNames
+			helper.DesktopEntryVerifier = func(string, string, app.AppSpec) error { return nil }
+
+			_, err := helper.install(context.Background(), "install", actionRequest{
+				AppName: spec.AppName, SourceRelative: relative,
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("install error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
