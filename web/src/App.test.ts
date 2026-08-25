@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 
 const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+const appTemplate = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')
 
 const application = {
   id: '012345abcdef',
@@ -78,8 +79,16 @@ function response(value: unknown) {
 }
 
 describe('DockFN single page', () => {
+  it('keeps the constrained create-review form vertically scrollable', () => {
+    expect(styles).toMatch(/\.review-step\s*\{[^}]*overflow-y:\s*auto;/s)
+  })
+
   it('keeps every registered-application action available on narrow screens', () => {
     expect(styles).not.toContain('.app-card .actions .icon-action:nth-of-type(2)')
+  })
+
+  it('reserves desktop action space when a registration needs repair', () => {
+    expect(styles).toMatch(/\.app-card\s*\{[^}]*grid-template-columns:[^;]*140px;/s)
   })
 
   it('renders registered applications as the primary view', async () => {
@@ -106,6 +115,14 @@ describe('DockFN single page', () => {
     expect(page.querySelector('button[aria-label="移除应用入口"]')?.getAttribute('title')).toBe(
       '移除应用入口',
     )
+  })
+
+  it('uses a distinct repair icon from desktop icon synchronization', () => {
+    const actions = appTemplate.match(/<div class="actions">([\s\S]*?)<\/div>/)?.[1] || ''
+    expect(actions).toContain('@click="beginIconSync(item)"')
+    expect(actions).toContain('solar:refresh-linear')
+    expect(actions).toContain('@click="runAction(item, \'repair\')"')
+    expect(actions).toContain('solar:magic-stick-3-linear')
   })
 
   it('confirms desktop icon synchronization before calling the dedicated endpoint', async () => {
@@ -239,6 +256,32 @@ describe('DockFN single page', () => {
       expect(
         page.querySelector('.discovery-copy-actions .primary-button .discovery-spinner'),
       ).toBeNull(),
+    )
+  })
+
+  it('explains an unavailable discovery helper in Chinese', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(response([]))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              code: 'DISCOVERY_UNAVAILABLE',
+              message: 'local Web service discovery is unavailable',
+              suggestion: 'Confirm the DockFN helper is running, then try again.',
+            }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } },
+          ),
+        ),
+    )
+    const page = await mountPage()
+    page.querySelector<HTMLButtonElement>('.topbar .primary-button')?.click()
+    await vi.waitFor(() =>
+      expect(page.querySelector('.message.error')?.textContent).toContain(
+        '无法扫描本机 Web 服务：DockFN 权限助手未运行或不可连接。',
+      ),
     )
   })
 
@@ -967,6 +1010,36 @@ describe('DockFN single page', () => {
     expect(dialog?.textContent).toContain('存储卷及业务数据')
     expect(dialog?.querySelector('.danger-button')?.textContent).toContain('移除应用入口')
     expect(dialog?.querySelector('.danger-button')?.textContent).not.toContain('仅移除')
+  })
+
+  it('shows deletion progress until the fnOS registration is removed', async () => {
+    let finishRemoval: ((value: Response) => void) | undefined
+    const removal = new Promise<Response>((resolve) => {
+      finishRemoval = resolve
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([application]))
+      .mockReturnValueOnce(removal)
+    vi.stubGlobal('fetch', fetchMock)
+    const page = await mountPage()
+    await vi.waitFor(() =>
+      expect(page.querySelector('button[aria-label="移除应用入口"]')).not.toBeNull(),
+    )
+    page.querySelector<HTMLButtonElement>('button[aria-label="移除应用入口"]')?.click()
+    await nextTick()
+    page.querySelector<HTMLButtonElement>('[role="alertdialog"] .danger-button')?.click()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    const confirmation = page.querySelector<HTMLButtonElement>(
+      '[role="alertdialog"] .danger-button',
+    )
+    expect(confirmation?.disabled).toBe(true)
+    expect(confirmation?.textContent).toContain('正在移除…')
+    expect(confirmation?.querySelector('.loader')).not.toBeNull()
+
+    finishRemoval?.(response({}))
+    await vi.waitFor(() => expect(page.querySelector('[role="alertdialog"]')).toBeNull())
   })
 
   it('does not show an open action that DockFN cannot resolve safely', async () => {

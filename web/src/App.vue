@@ -1003,6 +1003,9 @@ function errorMessage(reason: unknown) {
         reason.suggestion ? ` ${reason.suggestion}` : ''
       }`
     }
+    if (reason.code === 'DISCOVERY_UNAVAILABLE') {
+      return '无法扫描本机 Web 服务：DockFN 权限助手未运行或不可连接。请确认 helper 正在运行后重试。'
+    }
     return `${reason.message}${reason.suggestion ? ` ${reason.suggestion}` : ''}`
   }
   return reason instanceof Error ? reason.message : '操作失败，请稍后重试。'
@@ -1189,7 +1192,7 @@ onBeforeUnmount(() => {
                 title="修复登记壳"
                 @click="runAction(item, 'repair')"
               >
-                <Icon icon="solar:restart-linear" />
+                <Icon icon="solar:magic-stick-3-linear" />
               </button>
               <button
                 class="icon-action danger"
@@ -2154,7 +2157,15 @@ onBeforeUnmount(() => {
               :disabled="!!busy"
               @click="removeConfirmed"
             >
-              <Icon icon="solar:trash-bin-trash-linear" />移除应用入口
+              <Icon
+                :class="{ loader: busy === `${pendingRemoval.id}:remove` }"
+                :icon="
+                  busy === `${pendingRemoval.id}:remove`
+                    ? 'solar:refresh-linear'
+                    : 'solar:trash-bin-trash-linear'
+                "
+                aria-hidden="true"
+              />{{ busy === `${pendingRemoval.id}:remove` ? '正在移除…' : '移除应用入口' }}
             </button>
           </footer>
         </section>

@@ -269,6 +269,7 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 		}
 		if replacedExisting {
 			if restoreErr := h.restorePreviousRegistration(ctx, input.AppName, previousFPK, volume); restoreErr != nil {
+				h.captureRecoveryFailure(diagnosticCaptured, "restore-previous-registration", restoreErr)
 				return actionResponse{}, fmt.Errorf("application center install failed: %s; restoring the previous DockFN shell also failed: %v", redact(output), restoreErr)
 			}
 			return actionResponse{}, fmt.Errorf("application center install failed: %s; restored the previous DockFN shell", redact(output))
@@ -314,11 +315,13 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 		}
 		if replacedExisting {
 			if restoreErr := h.restorePreviousRegistration(ctx, input.AppName, previousFPK, volume); restoreErr != nil {
+				h.captureRecoveryFailure(diagnosticCaptured, "restore-previous-registration", restoreErr)
 				return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; restoring the previous DockFN shell also failed: %v", err, restoreErr)
 			}
 			return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; restored the previous DockFN shell", err)
 		}
 		if cleanupErr := h.removeInstalledRegistration(ctx, input.AppName); cleanupErr != nil {
+			h.captureRecoveryFailure(diagnosticCaptured, "remove-incomplete-registration", cleanupErr)
 			return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; automatic cleanup of the new DockFN shell failed: %v", err, cleanupErr)
 		}
 		return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; removed the incomplete DockFN shell", err)
@@ -511,6 +514,30 @@ func (h *Helper) captureOperationFailure(operation, stage, appName string, failu
 		AppName:    appName,
 		Error:      publicCommandError(failure),
 	})
+}
+
+func (h *Helper) captureRecoveryFailure(diagnosticCaptured bool, stage string, recoveryErr error) {
+	if !diagnosticCaptured {
+		return
+	}
+	path := filepath.Join(h.DataDir, "diagnostics", "last-install-failure.json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		slog.Warn("DockFN could not read install failure diagnostics for recovery", "stage", stage, "error", err)
+		return
+	}
+	var snapshot map[string]json.RawMessage
+	if err = json.Unmarshal(body, &snapshot); err != nil {
+		slog.Warn("DockFN could not decode install failure diagnostics for recovery", "stage", stage, "error", err)
+		return
+	}
+	stageValue, _ := json.Marshal(stage)
+	errorValue, _ := json.Marshal(publicCommandError(recoveryErr))
+	snapshot["recoveryStage"] = stageValue
+	snapshot["recoveryError"] = errorValue
+	if err = h.writeDiagnostic("last-install-failure.json", snapshot); err != nil {
+		slog.Warn("DockFN could not save recovery failure diagnostics", "stage", stage, "error", err)
+	}
 }
 
 func (h *Helper) captureDesktopValidationFailure(layout installedLayout, spec app.AppSpec, validationErr error) error {

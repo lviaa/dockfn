@@ -22,11 +22,12 @@ import (
 )
 
 type helperRunner struct {
-	mu             sync.Mutex
-	registrations  map[string]registration
-	calls          []string
-	failNewInstall bool
-	artifactNames  []string
+	mu                 sync.Mutex
+	registrations      map[string]registration
+	calls              []string
+	failNewInstall     bool
+	failRestoreInstall bool
+	artifactNames      []string
 }
 
 func (r *helperRunner) Run(_ context.Context, directory, name string, arguments ...string) ([]byte, error) {
@@ -79,6 +80,10 @@ func (r *helperRunner) Run(_ context.Context, directory, name string, arguments 
 			if r.failNewInstall && strings.Contains(arguments[1], "fnpack-output") {
 				r.failNewInstall = false
 				return []byte("install rejected"), errors.New("install rejected")
+			}
+			if r.failRestoreInstall && !strings.Contains(arguments[1], "fnpack-output") {
+				r.failRestoreInstall = false
+				return []byte("restore rejected"), errors.New("restore rejected")
 			}
 			if _, exists := r.registrations[appName]; exists {
 				return []byte("already installed"), nil
@@ -280,6 +285,34 @@ func TestHelperUpdateRestoresPreviousRegistrationWhenNewInstallFails(t *testing.
 	commands := strings.Join(runner.calls, "\n")
 	if !strings.Contains(commands, current) {
 		t.Fatalf("previous artifact was not reinstalled: %s", commands)
+	}
+}
+
+func TestHelperUpdateCapturesRecoveryFailureInDiagnostic(t *testing.T) {
+	helper, spec, relative, runner := helperFixture(t)
+	helper.DesktopEntryVerifier = func(string, string, app.AppSpec) error { return nil }
+	if _, err := helper.install(context.Background(), "install", actionRequest{AppName: spec.AppName, SourceRelative: relative}); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(helper.DataDir, "packages", "current", spec.ID+".fpk")
+	if err := os.MkdirAll(filepath.Dir(current), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(current, []byte(spec.AppName), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	runner.failNewInstall = true
+	runner.failRestoreInstall = true
+	if _, err := helper.install(context.Background(), "update", actionRequest{AppName: spec.AppName, SourceRelative: relative}); err == nil ||
+		!strings.Contains(err.Error(), "restoring the previous DockFN shell also failed") {
+		t.Fatalf("update error = %v, want restoration failure", err)
+	}
+	body, err := os.ReadFile(filepath.Join(helper.DataDir, "diagnostics", "last-install-failure.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "application center restore failed") {
+		t.Fatalf("diagnostic omitted restoration failure: %s", body)
 	}
 }
 
