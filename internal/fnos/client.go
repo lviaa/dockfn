@@ -109,7 +109,7 @@ func (c *Client) Discover(ctx context.Context) ([]app.DiscoveryCandidate, error)
 	}
 	response, err := c.httpClient().Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("fnOS helper unavailable: %w", err)
+		return nil, fmt.Errorf("%w: helper connection failed", app.ErrDiscoveryUnavailable)
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 512<<10))

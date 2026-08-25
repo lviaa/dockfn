@@ -339,7 +339,7 @@ p {
 
 .app-card {
   display: grid;
-  grid-template-columns: 46px minmax(175px, 1.4fr) minmax(90px, 0.65fr) minmax(144px, 0.9fr) auto;
+  grid-template-columns: 46px minmax(175px, 1.4fr) minmax(90px, 0.65fr) minmax(144px, 0.9fr) 140px;
   align-items: center;
   min-height: 68px;
   gap: 12px;
@@ -1089,7 +1089,8 @@ code,
   display: grid;
   align-content: start;
   gap: 8px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   scrollbar-width: none;
 }
 

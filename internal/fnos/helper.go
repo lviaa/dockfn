@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -167,7 +168,18 @@ func (h *Helper) action(action string) http.HandlerFunc {
 	}
 }
 
-func (h *Helper) install(ctx context.Context, action string, input actionRequest) (actionResponse, error) {
+func (h *Helper) install(ctx context.Context, action string, input actionRequest) (response actionResponse, returnedErr error) {
+	stage := "ownership-validation"
+	diagnosticCaptured := false
+	defer func() {
+		if returnedErr == nil || diagnosticCaptured {
+			return
+		}
+		if snapshotErr := h.captureOperationFailure(action, stage, input.AppName, returnedErr); snapshotErr != nil {
+			slog.Warn("DockFN could not save install failure diagnostics", "action", action, "appName", input.AppName, "error", snapshotErr)
+		}
+	}()
+
 	owned := h.owned(input.AppName)
 	if action == "update" && !owned {
 		return actionResponse{}, errors.New("registration is not owned by DockFN")
@@ -175,17 +187,21 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 	if action == "install" && owned {
 		return actionResponse{}, errors.New("registration already has a DockFN ownership marker")
 	}
+	stage = "resolve-package-source"
 	source, err := h.sourcePath(input.SourceRelative)
 	if err != nil {
 		return actionResponse{}, err
 	}
+	stage = "validate-package-source"
 	if err = shellpkg.ValidateDirectory(source, input.AppName); err != nil {
 		return actionResponse{}, fmt.Errorf("package validation: %w", err)
 	}
+	stage = "read-package-specification"
 	expectedSpec, err := shellpkg.ReadSpec(source)
 	if err != nil {
 		return actionResponse{}, fmt.Errorf("read package specification: %w", err)
 	}
+	stage = "prepare-fnpack-output"
 	outputDir := filepath.Join(filepath.Dir(source), "fnpack-output")
 	if !shellpkg.Within(h.StagingDir, outputDir) {
 		return actionResponse{}, errors.New("fnpack output escaped staging")
@@ -194,17 +210,21 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 	if err = os.MkdirAll(outputDir, 0o750); err != nil {
 		return actionResponse{}, err
 	}
+	stage = "fnpack-build"
 	output, runErr := h.runner().Run(ctx, outputDir, h.Fnpack, "build", "-d", source)
 	if runErr != nil {
 		return actionResponse{}, fmt.Errorf("fnpack build failed: %s", redact(output))
 	}
-	fpkPath := filepath.Join(outputDir, input.AppName+".fpk")
-	if err = requireRegularFile(fpkPath); err != nil {
-		return actionResponse{}, fmt.Errorf("fnpack output: %w", err)
+	stage = "select-fnpack-artifact"
+	fpkPath, err := singleFPKArtifact(outputDir)
+	if err != nil {
+		return actionResponse{}, fmt.Errorf("fnpack output: %w; command output: %s", err, redact(output))
 	}
+	stage = "prepare-fnpack-artifact"
 	if err = h.makeArtifactAccessible(outputDir, fpkPath); err != nil {
 		return actionResponse{}, fmt.Errorf("fnpack output permissions: %w", err)
 	}
+	stage = "list-registrations"
 	registrations, err := h.listRegistrations(ctx)
 	if err != nil {
 		return actionResponse{}, err
@@ -214,6 +234,7 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 			return actionResponse{}, errors.New("an application with this appName is already installed")
 		}
 	}
+	stage = "select-install-volume"
 	volume, err := h.volume(ctx)
 	if err != nil {
 		return actionResponse{}, err
@@ -221,6 +242,7 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 	previousFPK := ""
 	replacedExisting := false
 	if action == "update" {
+		stage = "prepare-registration-update"
 		if registration, exists := registrations[input.AppName]; exists {
 			if registration.Volume != "" && positiveInteger.MatchString(registration.Volume) {
 				volume = registration.Volume
@@ -236,20 +258,25 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 			replacedExisting = true
 		}
 	}
+	stage = "appcenter-install"
 	output, runErr = h.runner().Run(ctx, "", h.AppCenterCLI, "install-fpk", fpkPath, "--volume", volume)
 	if runErr != nil || appCenterFailed(output) {
 		installErr := fmt.Errorf("application center install failed: %s", redact(output))
 		if snapshotErr := h.capturePackageInstallFailure(source, expectedSpec, installErr); snapshotErr != nil {
 			slog.Warn("DockFN could not save application center failure diagnostics", "appName", input.AppName, "error", snapshotErr)
+		} else {
+			diagnosticCaptured = true
 		}
 		if replacedExisting {
 			if restoreErr := h.restorePreviousRegistration(ctx, input.AppName, previousFPK, volume); restoreErr != nil {
+				h.captureRecoveryFailure(diagnosticCaptured, "restore-previous-registration", restoreErr)
 				return actionResponse{}, fmt.Errorf("application center install failed: %s; restoring the previous DockFN shell also failed: %v", redact(output), restoreErr)
 			}
 			return actionResponse{}, fmt.Errorf("application center install failed: %s; restored the previous DockFN shell", redact(output))
 		}
 		return actionResponse{}, fmt.Errorf("application center install failed: %s", redact(output))
 	}
+	stage = "verify-application-center-registration"
 	registrations, err = h.listRegistrations(ctx)
 	if err != nil {
 		if replacedExisting {
@@ -270,6 +297,7 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 	if registration.Volume != "" && positiveInteger.MatchString(registration.Volume) {
 		volume = registration.Volume
 	}
+	stage = "observe-install-layout"
 	layout, err := h.observedInstallLayout(input.AppName, volume)
 	if err != nil {
 		if replacedExisting {
@@ -278,21 +306,27 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 		return actionResponse{}, fmt.Errorf("verify application center install path: %w", err)
 	}
 	installPath := layout.TargetRoot
+	stage = "desktop-validation"
 	if err = h.verifyDesktopEntry(layout.RegistryRoot, layout.TargetRoot, expectedSpec); err != nil {
 		if snapshotErr := h.captureDesktopValidationFailure(layout, expectedSpec, err); snapshotErr != nil {
 			slog.Warn("DockFN could not save desktop validation diagnostics", "appName", input.AppName, "error", snapshotErr)
+		} else {
+			diagnosticCaptured = true
 		}
 		if replacedExisting {
 			if restoreErr := h.restorePreviousRegistration(ctx, input.AppName, previousFPK, volume); restoreErr != nil {
+				h.captureRecoveryFailure(diagnosticCaptured, "restore-previous-registration", restoreErr)
 				return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; restoring the previous DockFN shell also failed: %v", err, restoreErr)
 			}
 			return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; restored the previous DockFN shell", err)
 		}
 		if cleanupErr := h.removeInstalledRegistration(ctx, input.AppName); cleanupErr != nil {
+			h.captureRecoveryFailure(diagnosticCaptured, "remove-incomplete-registration", cleanupErr)
 			return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; automatic cleanup of the new DockFN shell failed: %v", err, cleanupErr)
 		}
 		return actionResponse{}, fmt.Errorf("verify fnOS desktop entry: %w; removed the incomplete DockFN shell", err)
 	}
+	stage = "hash-fnpack-artifact"
 	digest, err := fileSHA256(fpkPath)
 	if err != nil {
 		return actionResponse{}, err
@@ -300,9 +334,11 @@ func (h *Helper) install(ctx context.Context, action string, input actionRequest
 	marker := ownership{
 		AppName: input.AppName, GeneratedBy: "dockfn", InstallPath: installPath, ArtifactSHA256: digest,
 	}
+	stage = "write-ownership-marker"
 	if err = h.writeOwnership(marker); err != nil {
 		return actionResponse{}, err
 	}
+	stage = "finalize-artifact-path"
 	relative, err := filepath.Rel(h.StagingDir, fpkPath)
 	if err != nil || filepath.IsAbs(relative) || strings.HasPrefix(relative, "..") {
 		return actionResponse{}, errors.New("built FPK escaped staging")
@@ -460,6 +496,48 @@ type desktopValidationSnapshot struct {
 	Expected     app.AppSpec `json:"expected"`
 	Manifest     string      `json:"manifest,omitempty"`
 	UIConfig     string      `json:"uiConfig,omitempty"`
+}
+
+type operationFailureSnapshot struct {
+	CapturedAt string `json:"capturedAt"`
+	Operation  string `json:"operation"`
+	Stage      string `json:"stage"`
+	AppName    string `json:"appName"`
+	Error      string `json:"error"`
+}
+
+func (h *Helper) captureOperationFailure(operation, stage, appName string, failure error) error {
+	return h.writeDiagnostic("last-install-failure.json", operationFailureSnapshot{
+		CapturedAt: time.Now().UTC().Format(time.RFC3339),
+		Operation:  operation,
+		Stage:      stage,
+		AppName:    appName,
+		Error:      publicCommandError(failure),
+	})
+}
+
+func (h *Helper) captureRecoveryFailure(diagnosticCaptured bool, stage string, recoveryErr error) {
+	if !diagnosticCaptured {
+		return
+	}
+	path := filepath.Join(h.DataDir, "diagnostics", "last-install-failure.json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		slog.Warn("DockFN could not read install failure diagnostics for recovery", "stage", stage, "error", err)
+		return
+	}
+	var snapshot map[string]json.RawMessage
+	if err = json.Unmarshal(body, &snapshot); err != nil {
+		slog.Warn("DockFN could not decode install failure diagnostics for recovery", "stage", stage, "error", err)
+		return
+	}
+	stageValue, _ := json.Marshal(stage)
+	errorValue, _ := json.Marshal(publicCommandError(recoveryErr))
+	snapshot["recoveryStage"] = stageValue
+	snapshot["recoveryError"] = errorValue
+	if err = h.writeDiagnostic("last-install-failure.json", snapshot); err != nil {
+		slog.Warn("DockFN could not save recovery failure diagnostics", "stage", stage, "error", err)
+	}
 }
 
 func (h *Helper) captureDesktopValidationFailure(layout installedLayout, spec app.AppSpec, validationErr error) error {
@@ -759,6 +837,37 @@ func (h *Helper) makeArtifactAccessible(outputDir, fpkPath string) error {
 		return err
 	}
 	return os.Chmod(fpkPath, 0o660)
+}
+
+func singleFPKArtifact(outputDir string) (string, error) {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return "", fmt.Errorf("read output directory %s: %w", outputDir, err)
+	}
+	artifacts := make([]string, 0, 1)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".fpk" {
+			continue
+		}
+		path := filepath.Join(outputDir, entry.Name())
+		if err := requireRegularFile(path); err != nil {
+			return "", fmt.Errorf("invalid FPK artifact %s: %w", entry.Name(), err)
+		}
+		artifacts = append(artifacts, path)
+	}
+	sort.Strings(artifacts)
+	switch len(artifacts) {
+	case 1:
+		return artifacts[0], nil
+	case 0:
+		return "", fmt.Errorf("found no .fpk files in %s", outputDir)
+	default:
+		names := make([]string, 0, len(artifacts))
+		for _, artifact := range artifacts {
+			names = append(names, filepath.Base(artifact))
+		}
+		return "", fmt.Errorf("found %d .fpk files in %s: %s", len(artifacts), outputDir, strings.Join(names, ", "))
+	}
 }
 
 func (h *Helper) runner() Runner {

@@ -999,7 +999,12 @@ function suggestionLabel(candidate: DiscoveryCandidate) {
 function errorMessage(reason: unknown) {
   if (reason instanceof APIError) {
     if (reason.code === 'FNOS_OPERATION_FAILED') {
-      return 'fnOS 应用登记未完成。DockFN 已保留安装诊断；请打开“诊断”查看详情后重试。'
+      return `fnOS 应用登记未完成：${reason.message}${
+        reason.suggestion ? ` ${reason.suggestion}` : ''
+      }`
+    }
+    if (reason.code === 'DISCOVERY_UNAVAILABLE') {
+      return '无法扫描本机 Web 服务：DockFN 权限助手未运行或不可连接。请确认 helper 正在运行后重试。'
     }
     return `${reason.message}${reason.suggestion ? ` ${reason.suggestion}` : ''}`
   }
@@ -1187,7 +1192,7 @@ onBeforeUnmount(() => {
                 title="修复登记壳"
                 @click="runAction(item, 'repair')"
               >
-                <Icon icon="solar:restart-linear" />
+                <Icon icon="solar:magic-stick-3-linear" />
               </button>
               <button
                 class="icon-action danger"
@@ -2152,7 +2157,15 @@ onBeforeUnmount(() => {
               :disabled="!!busy"
               @click="removeConfirmed"
             >
-              <Icon icon="solar:trash-bin-trash-linear" />移除应用入口
+              <Icon
+                :class="{ loader: busy === `${pendingRemoval.id}:remove` }"
+                :icon="
+                  busy === `${pendingRemoval.id}:remove`
+                    ? 'solar:refresh-linear'
+                    : 'solar:trash-bin-trash-linear'
+                "
+                aria-hidden="true"
+              />{{ busy === `${pendingRemoval.id}:remove` ? '正在移除…' : '移除应用入口' }}
             </button>
           </footer>
         </section>

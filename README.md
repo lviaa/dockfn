@@ -108,6 +108,7 @@ x86_64 FPK 已在真实 fnOS 设备完成安装和核心功能验证。ARM64 FPK
 - [发布流程](docs/release.md)
 - [0.1.0 发布说明](docs/releases/v0.1.0.md)
 - [0.1.1 发布说明](docs/releases/v0.1.1.md)
+- [0.1.2 发布说明](docs/releases/v0.1.2.md)
 
 ## 许可证
 
