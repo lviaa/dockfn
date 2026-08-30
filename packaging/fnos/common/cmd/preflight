@@ -20,7 +20,6 @@ case "${TRIM_SYS_ARCH:-}" in
 esac
 
 [ -x /usr/sbin/start-stop-daemon ] || fail "缺少 /usr/sbin/start-stop-daemon"
-[ -x /usr/bin/setpriv ] || fail "缺少 /usr/bin/setpriv"
 [ -x /usr/local/bin/appcenter-cli ] || fail "缺少 /usr/local/bin/appcenter-cli"
 [ -x /usr/local/bin/fnpack ] || fail "缺少 /usr/local/bin/fnpack"
 

@@ -109,12 +109,16 @@ func inspectFPK(path, version string) {
 		}
 	}
 	manifest := string(members["manifest"].body)
-	requireText(path+" manifest", manifest,
-		"appname=dockfn", "display_name=DockFN", "version="+version,
-		"desktop_applaunchname=dockfn.main", "maintainer=lviaa",
-		"maintainer_url=https://github.com/lviaa/dockfn",
-		"distributor=lviaa", "distributor_url=https://github.com/lviaa/dockfn/releases",
-	)
+	requireManifestFields(path+" manifest", manifest, map[string]string{
+		"appname":               "dockfn",
+		"display_name":          "DockFN",
+		"version":               version,
+		"desktop_applaunchname": "dockfn.main",
+		"maintainer":            "lviaa",
+		"maintainer_url":        "https://github.com/lviaa/dockfn",
+		"distributor":           "lviaa",
+		"distributor_url":       "https://github.com/lviaa/dockfn/releases",
+	})
 	description := manifestField(manifest, "desc")
 	if description == "" || len([]rune(description)) > 200 ||
 		!strings.Contains(description, "Web 服务") ||
@@ -137,12 +141,17 @@ func inspectFPK(path, version string) {
 		`"url": "/app/dockfn/"`, `"allUsers": false`,
 	)
 	machine := elf.EM_X86_64
-	platform, architecture := "platform=x86", "arch=x86_64"
+	platform := "x86"
 	if strings.HasSuffix(path, "-arm64.fpk") {
 		machine = elf.EM_AARCH64
-		platform, architecture = "platform=arm", "arch=aarch64"
+		platform = "arm"
 	}
-	requireText(path+" manifest", manifest, platform, architecture)
+	if got := manifestField(manifest, "platform"); got != platform {
+		panic(fmt.Sprintf("%s manifest platform=%q, want %q", path, got, platform))
+	}
+	if hasManifestField(manifest, "arch") {
+		panic(path + " manifest retains the deprecated arch field")
+	}
 	binary, err := elf.NewFile(bytes.NewReader(appMembers["target/dockfn"].body))
 	if err != nil {
 		panic(fmt.Errorf("%s target/dockfn is not ELF: %w", path, err))
@@ -169,6 +178,10 @@ func inspectFPK(path, version string) {
 	)
 	if strings.Contains(lifecycle, "bridge") || strings.Contains(lifecycle, "docker") {
 		panic(path + " lifecycle retains a removed bridge or Docker role")
+	}
+	preflight := string(members["cmd/preflight"].body)
+	if strings.Contains(preflight, "/usr/bin/setpriv") {
+		panic(path + " preflight retains the unused setpriv dependency")
 	}
 	privilege := string(members["config/privilege"].body)
 	requireText(path+" privilege", privilege, `"run-as":"root"`, `"username":"dockfn"`, `"groupname":"dockfn"`)
@@ -218,13 +231,21 @@ func inspectFPK(path, version string) {
 }
 
 func manifestField(manifest, key string) string {
-	prefix := key + "="
 	for _, line := range strings.Split(manifest, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		field, value, found := strings.Cut(line, "=")
+		if found && strings.TrimSpace(field) == key {
+			return strings.TrimSpace(value)
 		}
 	}
 	return ""
+}
+
+func requireManifestFields(subject, manifest string, expected map[string]string) {
+	for key, want := range expected {
+		if got := manifestField(manifest, key); got != want {
+			panic(fmt.Sprintf("%s %s=%q, want %q", subject, key, got, want))
+		}
+	}
 }
 
 func scanSource() {
@@ -356,6 +377,16 @@ func requireText(subject, body string, values ...string) {
 			panic(subject + " missing " + value)
 		}
 	}
+}
+
+func hasManifestField(manifest, name string) bool {
+	for _, line := range strings.Split(manifest, "\n") {
+		key, _, found := strings.Cut(line, "=")
+		if found && strings.TrimSpace(key) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func checkPNG(subject, name string, body []byte, size int) {

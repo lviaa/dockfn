@@ -26,7 +26,7 @@ Windows 可双击 `scripts/build-fpk.cmd`，或执行 `./scripts/build-fpk.ps1`�
 
 ## GitHub Release
 
-推送 `v*` 标签后，GitHub Actions 会在通过 CI 的同一提交上重新构建产物并创建 Release：
+推送 `v*` 标签后，GitHub Actions 会校验并安装固定版本的官方 `fnpack`，在通过 CI 的同一提交上重新构建产物并创建 Release：
 
 ```sh
 git tag "v$VERSION"

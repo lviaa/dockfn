@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -69,6 +70,21 @@ func TestRenderNewIdentityUsesAppNamePrefixedDesktopEntry(t *testing.T) {
 	}
 	if _, exists := config[".url"]["blinko.dkfn.main"]; !exists {
 		t.Fatalf("new desktop entry is missing: %s", body)
+	}
+}
+
+func TestManifestUsesCurrentPlatformWithoutDeprecatedArch(t *testing.T) {
+	t.Parallel()
+	wantPlatform := "platform=x86\n"
+	if runtime.GOARCH == "arm64" {
+		wantPlatform = "platform=arm\n"
+	}
+	body := string(manifest(packageTestSpec()))
+	if !strings.Contains(body, wantPlatform) {
+		t.Fatalf("manifest is missing %q:\n%s", strings.TrimSpace(wantPlatform), body)
+	}
+	if strings.Contains(body, "\narch=") {
+		t.Fatalf("manifest retained the deprecated arch field:\n%s", body)
 	}
 }
 
