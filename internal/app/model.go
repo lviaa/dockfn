@@ -259,10 +259,10 @@ func IsManagedSpec(spec AppSpec) bool {
 	return spec.EntryID == "" && legacyAppNamePattern.MatchString(spec.AppName)
 }
 
-// DesktopEntryName centralizes the fnOS identity rule. The entry uses appName
-// directly; fnOS remains responsible for any external URL derived from it.
+// DesktopEntryName centralizes the fnOS identity rule. fnOS requires desktop
+// entry IDs to use appName as a prefix followed by a named entry.
 func DesktopEntryName(appName string) string {
-	return appName
+	return appName + ".main"
 }
 
 func EntryPrefix(appName string) string {

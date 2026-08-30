@@ -39,7 +39,7 @@
 - 产品说明允许为空，但生成 fnOS manifest 时仅以已验证的显示名称补齐 `desc`；两者都经过控制字符和长度校验，不接受原始 manifest 文本。
 - 日志不输出 Cookie、Token、Authorization、密码或 URL 凭据。
 
-应用中心报告安装成功并不构成 DockFN 创建成功：helper 还会检查实际安装目录 manifest、`ui/config` 中 `DesktopEntryName(AppName)` 对应的 URL/iframe 类型、字符串端口、`url`、协议、用户权限，以及可解码的 `ui/images/icon_64.png`/`icon_256.png`。检查失败时不会写入 DockFN ownership 收据或 AppSpec，并会在诊断报告和 helper 日志中保留脱敏失败原因。
+应用中心报告安装成功并不构成 DockFN 创建成功：helper 还会检查实际安装目录 manifest、`ui/config` 中 `DesktopEntryName(AppName) = AppName + ".main"` 对应的 URL/iframe 类型、字符串端口、`url`、协议、用户权限，以及可解码的 `ui/images/icon_64.png`/`icon_256.png`。检查失败时不会写入 DockFN ownership 收据或 AppSpec，并会在诊断报告和 helper 日志中保留脱敏失败原因。
 
 ## 删除保证
 

@@ -148,7 +148,7 @@ func TestHelperUpdateUsesInternalIDForCustomEntryPrefixArtifact(t *testing.T) {
 func TestHelperInstallsNewDomainIdentity(t *testing.T) {
 	helper, spec, relative, runner := helperFixtureWithAppName(t, "blinko.dkfn")
 	helper.DesktopEntryVerifier = func(_, _ string, expected app.AppSpec) error {
-		if expected.AppName != "blinko.dkfn" || app.DesktopEntryName(expected.AppName) != "blinko.dkfn" {
+		if expected.AppName != "blinko.dkfn" || app.DesktopEntryName(expected.AppName) != "blinko.dkfn.main" {
 			return errors.New("unexpected desktop identity")
 		}
 		return nil
@@ -431,7 +431,7 @@ func TestVerifyDesktopEntryReadsManifestFromRegistryAndUIFromTarget(t *testing.T
 			"service_port          = %d\n"+
 			"ctl_stop              = true\n"+
 			"checksum              = 58783f3327ec57d2d2dc2d470cb8f81c\n",
-		spec.AppName, spec.AppName, spec.Port,
+		spec.AppName, app.DesktopEntryName(spec.AppName), spec.Port,
 	)
 	if err := os.WriteFile(filepath.Join(registryRoot, "manifest"), []byte(installedManifest), 0o640); err != nil {
 		t.Fatal(err)
@@ -445,13 +445,13 @@ func TestParseManifestAcceptsFnpackAlignedFields(t *testing.T) {
 	manifest := []byte(
 		"appname               = blinko.dkfn\n" +
 			"desktop_uidir         = ui\n" +
-			"desktop_applaunchname = blinko.dkfn\n" +
+			"desktop_applaunchname = blinko.dkfn.main\n" +
 			"service_port          = 1111\n" +
 			"checksum              = 58783f3327ec57d2d2dc2d470cb8f81c\n",
 	)
 	fields := parseManifest(manifest)
 	if fields["appname"] != "blinko.dkfn" ||
-		fields["desktop_applaunchname"] != "blinko.dkfn" ||
+		fields["desktop_applaunchname"] != "blinko.dkfn.main" ||
 		fields["service_port"] != "1111" {
 		t.Fatalf("fnpack-aligned manifest fields were not normalized: %#v", fields)
 	}
@@ -489,11 +489,11 @@ func TestVerifyDesktopEntryRequiresMatchingEntryAndIcons(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(configDir, "images"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	config := `{".url":{"photos.dkfn":{"title":"Photos","icon":"images/icon_{0}.png","type":"iframe","protocol":"http","port":"8080","url":"/","allUsers":false,"control":{"accessPerm":"readonly"}}}}`
+	config := `{".url":{"photos.dkfn.main":{"title":"Photos","icon":"images/icon_{0}.png","type":"iframe","protocol":"http","port":"8080","url":"/","allUsers":false,"control":{"accessPerm":"readonly"}}}}`
 	if err := os.WriteFile(filepath.Join(configDir, "config"), []byte(config), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	manifest := "appname=photos.dkfn\ndesktop_uidir=ui\ndesktop_applaunchname=photos.dkfn\nservice_port=8080\nctl_stop=true\n"
+	manifest := "appname=photos.dkfn\ndesktop_uidir=ui\ndesktop_applaunchname=photos.dkfn.main\nservice_port=8080\nctl_stop=true\n"
 	if err := os.WriteFile(filepath.Join(root, "manifest"), []byte(manifest), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestVerifyDesktopEntryRequiresMatchingEntryAndIcons(t *testing.T) {
 	if err := verifyDesktopEntry(root, root, spec); err != nil {
 		t.Fatal(err)
 	}
-	badConfig := `{".url":{"photos.dkfn":{"title":"Photos","icon":"images/icon_{0}.png","type":"iframe","protocol":"http","port":8080,"path":"/","allUsers":false}}}`
+	badConfig := `{".url":{"photos.dkfn.main":{"title":"Photos","icon":"images/icon_{0}.png","type":"iframe","protocol":"http","port":8080,"path":"/","allUsers":false}}}`
 	if err := os.WriteFile(filepath.Join(configDir, "config"), []byte(badConfig), 0o640); err != nil {
 		t.Fatal(err)
 	}
