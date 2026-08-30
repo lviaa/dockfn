@@ -232,7 +232,7 @@ describe('DockFN single page', () => {
     ).toBe('true')
     expect(page.querySelector<HTMLInputElement>('.toggle-line input')?.checked).toBe(true)
     expect(page.querySelector('.icon-preview-wrap .dockfn-badge')).toBeNull()
-    expect(page.querySelector('.field-help')?.textContent).toContain('app-<应用 ID>')
+    expect(page.querySelector('.field-help')?.textContent).toContain('app-<应用 ID>.main')
   })
 
   it('animates the discovery indicator while a service scan is running', async () => {

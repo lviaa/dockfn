@@ -155,9 +155,9 @@ func TestOwnedAppNameRejectsExternalNames(t *testing.T) {
 	}
 }
 
-func TestDesktopEntryNameUsesAppNameDirectly(t *testing.T) {
+func TestDesktopEntryNameUsesAppNamePrefix(t *testing.T) {
 	t.Parallel()
-	if got := DesktopEntryName("blinko.dkfn"); got != "blinko.dkfn" {
+	if got := DesktopEntryName("blinko.dkfn"); got != "blinko.dkfn.main" {
 		t.Fatalf("desktop entry=%q", got)
 	}
 	if got := EntryPrefix("blinko.dkfn"); got != "blinko" {

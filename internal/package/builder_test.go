@@ -38,12 +38,12 @@ func TestRenderRegistrationShellSupportsURLMode(t *testing.T) {
 	if err = json.Unmarshal(body, &config); err != nil {
 		t.Fatal(err)
 	}
-	if entry := config[".url"][spec.AppName]; entry["type"] != "url" {
+	if entry := config[".url"][app.DesktopEntryName(spec.AppName)]; entry["type"] != "url" {
 		t.Fatalf("URL mode was not written to fnOS UI config: %#v", entry)
 	}
 }
 
-func TestRenderNewIdentityUsesAppNameAsDesktopEntry(t *testing.T) {
+func TestRenderNewIdentityUsesAppNamePrefixedDesktopEntry(t *testing.T) {
 	data := t.TempDir()
 	builder := &Builder{DataDir: data, StagingDir: filepath.Join(data, "staging")}
 	spec := packageTestSpec()
@@ -56,9 +56,8 @@ func TestRenderNewIdentityUsesAppNameAsDesktopEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(manifest), "desktop_applaunchname=blinko.dkfn\n") ||
-		strings.Contains(string(manifest), "blinko.dkfn.main") {
-		t.Fatalf("new identity did not use the appName as its entry ID:\n%s", manifest)
+	if !strings.Contains(string(manifest), "desktop_applaunchname=blinko.dkfn.main\n") {
+		t.Fatalf("new identity did not use an appName-prefixed entry ID:\n%s", manifest)
 	}
 	body, err := os.ReadFile(filepath.Join(source.Directory, "app", "ui", "config"))
 	if err != nil {
@@ -68,7 +67,7 @@ func TestRenderNewIdentityUsesAppNameAsDesktopEntry(t *testing.T) {
 	if err = json.Unmarshal(body, &config); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := config[".url"]["blinko.dkfn"]; !exists {
+	if _, exists := config[".url"]["blinko.dkfn.main"]; !exists {
 		t.Fatalf("new desktop entry is missing: %s", body)
 	}
 }
@@ -170,7 +169,7 @@ func TestRenderRegistrationShell(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"appname=photos.dkfn", "display_name=Home Photos",
-		"version=1.0.4", "desktop_applaunchname=photos.dkfn",
+		"version=1.0.4", "desktop_applaunchname=photos.dkfn.main",
 		"service_port=8443", "ctl_stop=true", "checkport=false",
 		"maintainer=lviaa", "maintainer_url=https://github.com/lviaa/dockfn",
 		"distributor=lviaa", "distributor_url=https://github.com/lviaa/dockfn/releases",
@@ -196,7 +195,7 @@ func TestRenderRegistrationShell(t *testing.T) {
 	if err = json.Unmarshal(body, &config); err != nil {
 		t.Fatal(err)
 	}
-	entry := config[".url"]["photos.dkfn"]
+	entry := config[".url"]["photos.dkfn.main"]
 	if entry["type"] != "iframe" || entry["protocol"] != "https" || entry["port"] != "8443" ||
 		entry["url"] != "/photos/" || entry["allUsers"] != true {
 		t.Fatalf("unexpected UI entry: %#v", entry)
@@ -234,7 +233,7 @@ func TestValidateDirectoryRejectsNonStringPortAndPathField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invalid := `{".url":{"photos.dkfn":{"title":"Home Photos","icon":"images/icon_{0}.png","type":"iframe","protocol":"https","port":8443,"path":"/photos/","allUsers":true}}}`
+	invalid := `{".url":{"photos.dkfn.main":{"title":"Home Photos","icon":"images/icon_{0}.png","type":"iframe","protocol":"https","port":8443,"path":"/photos/","allUsers":true}}}`
 	if err = os.WriteFile(filepath.Join(source.Directory, "app", "ui", "config"), []byte(invalid), 0o640); err != nil {
 		t.Fatal(err)
 	}

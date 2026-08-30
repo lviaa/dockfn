@@ -1247,7 +1247,8 @@ onBeforeUnmount(() => {
                   <Icon icon="solar:info-circle-linear" aria-hidden="true" />
                   <span role="tooltip"
                     >{id} 表示根据应用名称自动生成、且可在创建前修改的应用 ID。模板描述完整 fnOS
-                    ID，不会再自动追加后缀；修改模板不会重命名现有应用。</span
+                    应用 ID；桌面入口 ID 固定派生为“应用
+                    ID.main”，修改模板不会重命名现有应用。</span
                   >
                 </span>
               </div>
@@ -1260,12 +1261,16 @@ onBeforeUnmount(() => {
                   :aria-invalid="!!settingsTemplateError"
                   placeholder="dkfn.{id}"
                 />
-                <small>填写完整模板，例如 <code>dkfn.{id}</code> 或 <code>{id}.dkfn</code></small>
+                <small
+                  >填写 fnOS 应用 ID 模板，例如 <code>dkfn.{id}</code> 或
+                  <code>{id}.dkfn</code></small
+                >
                 <small v-if="settingsTemplateError" class="field-error">{{
                   settingsTemplateError
                 }}</small>
                 <small v-else class="field-preview"
-                  >生成结果：<code>{{ settingsTemplatePreview }}</code></small
+                  >应用 ID：<code>{{ settingsTemplatePreview }}</code
+                  >；桌面入口 ID：<code>{{ settingsTemplatePreview }}.main</code></small
                 >
               </label>
             </section>
@@ -1658,13 +1663,13 @@ onBeforeUnmount(() => {
               /></label>
               <label
                 ><span class="field-label-with-info"
-                  >fnOS 入口 ID
+                  >fnOS 应用 ID
                   <span class="info-tip" tabindex="0" aria-label="fnID 创建规则说明">
                     <Icon icon="solar:info-circle-linear" aria-hidden="true" />
                     <span role="tooltip"
                       >{{ entryRulePreview }}；支持中文转无声调拼音、英文小写化和特殊符号过滤。完整
-                      fnOS ID 按全局模板 {{ settings.entryPrefixTemplate }} 生成，最终访问域名仍由
-                      fnOS 管理。</span
+                      fnOS 应用 ID 按全局模板 {{ settings.entryPrefixTemplate }} 生成，桌面入口 ID
+                      固定派生为“应用 ID.main”，最终访问域名仍由 fnOS 管理。</span
                     >
                   </span></span
                 ><input
@@ -1675,7 +1680,8 @@ onBeforeUnmount(() => {
                   placeholder="留空则自动生成"
                   @input="onEntryIDInput"
                 /><small class="field-help"
-                  >应用标识：<code>{{ entryNamePreview }}</code></small
+                  >应用 ID：<code>{{ entryNamePreview }}</code
+                  >；桌面入口 ID：<code>{{ entryNamePreview }}.main</code></small
                 ></label
               >
               <fieldset class="open-type-field">
@@ -1840,8 +1846,12 @@ onBeforeUnmount(() => {
               </p>
               <dl v-if="completedApp" class="completion-details">
                 <div>
-                  <dt>入口 ID</dt>
+                  <dt>应用 ID</dt>
                   <dd>{{ completedApp.appName }}</dd>
+                </div>
+                <div>
+                  <dt>桌面入口 ID</dt>
+                  <dd>{{ completedApp.appName }}.main</dd>
                 </div>
                 <div>
                   <dt>目标服务</dt>
