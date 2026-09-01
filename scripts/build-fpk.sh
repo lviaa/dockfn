@@ -12,12 +12,10 @@ for arch in amd64 arm64; do
   case "$arch" in
     amd64)
       platform=x86
-      fnos_arch=x86_64
       artifact_arch=x86_64
       ;;
     arm64)
       platform=arm
-      fnos_arch=aarch64
       artifact_arch=arm64
       ;;
   esac
@@ -28,7 +26,6 @@ for arch in amd64 arm64; do
   sed \
     -e "s/{{VERSION}}/$version/g" \
     -e "s/{{PLATFORM}}/$platform/g" \
-    -e "s/{{ARCH}}/$fnos_arch/g" \
     "$root/packaging/fnos/common/manifest.template" >"$work/manifest"
   for script in main migrate install_init install_callback upgrade_init upgrade_callback uninstall_init uninstall_callback config_init config_callback preflight; do
     cp "$root/packaging/fnos/common/cmd/$script" "$work/cmd/$script"

@@ -1,5 +1,9 @@
 name: ci
 
+env:
+  FNPACK_VERSION: 1.2.3
+  FNPACK_SHA256: 54b97fa7b70968c4d05c79840f5daeff508957d0bb2062fdb0376d00d9615c93
+
 on:
   push:
   pull_request:
@@ -22,6 +26,13 @@ jobs:
           node-version: 24.18.0
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install official fnpack
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://static2.fnnas.com/fnpack/fnpack-${FNPACK_VERSION}-linux-amd64" \
+            --output /tmp/fnpack
+          printf '%s  %s\n' "$FNPACK_SHA256" /tmp/fnpack | sha256sum --check --strict
+          sudo install -m 0755 /tmp/fnpack /usr/local/bin/fnpack
       - name: Test
         run: make verify
       - name: Build FPK
@@ -51,6 +62,13 @@ jobs:
           node-version: 24.18.0
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install official fnpack
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://static2.fnnas.com/fnpack/fnpack-${FNPACK_VERSION}-linux-amd64" \
+            --output /tmp/fnpack
+          printf '%s  %s\n' "$FNPACK_SHA256" /tmp/fnpack | sha256sum --check --strict
+          sudo install -m 0755 /tmp/fnpack /usr/local/bin/fnpack
       - name: Build release
         run: make fpk VERSION="${GITHUB_REF_NAME#v}" COMMIT="$GITHUB_SHA" BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       - env:
